@@ -1,0 +1,14 @@
+[package]
+name = "lib6502"
+version = "0.1.0"
+edition = "2021"
+authors = ["bwpge <bwpge.dev@gmail.com>"]
+repository = "https://github.com/bwpge/lib6502"
+description = """
+A library for 6502 emulation.
+"""
+publish = false
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
