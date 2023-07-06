@@ -143,12 +143,18 @@ mod tests {
     }
 
     impl Bus for TestStruct {
-        fn read(&self, _: u16) -> u8 {
-            self.data
+        fn read(&self, address: u16) -> u8 {
+            if address == 0x8000 {
+                self.data
+            } else {
+                0
+            }
         }
 
-        fn write(&mut self, _: u16, data: u8) {
-            self.data = data
+        fn write(&mut self, address: u16, data: u8) {
+            if address == 0x8000 {
+                self.data = data
+            }
         }
     }
 
@@ -157,14 +163,17 @@ mod tests {
         let mut s = TestStruct { data: 0 };
 
         assert_eq!(s.read(0), 0);
+        assert_eq!(s.read(0x8000), 0);
         assert_eq!(s.read(0xFFFF), 0);
 
         s.write(0xFFFF, 0xEA);
-        assert_eq!(s.read(0), 0xEA);
-        assert_eq!(s.read(0xFFFF), 0xEA);
+        assert_eq!(s.read(0), 0);
+        assert_eq!(s.read(0x8000), 0);
+        assert_eq!(s.read(0xFFFF), 0);
 
-        s.write(0x8000, 0xA1);
-        assert_eq!(s.read(0), 0xA1);
-        assert_eq!(s.read(0xFFFF), 0xA1);
+        s.write(0x8000, 0xEA);
+        assert_eq!(s.read(0), 0);
+        assert_eq!(s.read(0x8000), 0xEA);
+        assert_eq!(s.read(0xFFFF), 0);
     }
 }
