@@ -485,6 +485,12 @@ pub struct Instruction {
     pub(crate) opcode: u8,
 }
 
+impl Default for Instruction {
+    fn default() -> Self {
+        INSTRUCTION_SET[0]
+    }
+}
+
 impl Instruction {
     /// Returns the human-readable code for this instruction.
     pub fn mnemonic(self) -> Mnemonic {
@@ -646,5 +652,22 @@ mod tests {
             /* E- */ CPX imm,  SBC x_ind,  - -,      - -,   CPX zpg,    SBC zpg,    INC zpg,    - -,  INX imp,  SBC imm,    NOP imp,  - -,  CPX abs,    SBC abs,    INC abs,    - -,
             /* F- */ BEQ rel,  SBC ind_y,  - -,      - -,   - -,        SBC zpg_x,  INC zpg_x,  - -,  SED imp,  SBC abs_y,  - -,      - -,  - -,        SBC abs_x,  INC abs_x,  - -,
         };
+    }
+
+    #[test]
+    fn to_from_u8() {
+        let byte = 0xEA;
+        let inst = Instruction::from(byte);
+
+        assert_eq!(inst.opcode(), byte);
+        assert_eq!(u8::from(inst), byte);
+    }
+
+    #[test]
+    fn default_instruction() {
+        let inst = Instruction::default();
+
+        assert_eq!(inst.opcode(), 0x00);
+        assert_eq!(u8::from(inst), 0x00);
     }
 }
