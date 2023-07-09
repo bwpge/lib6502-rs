@@ -1,6 +1,8 @@
+#![allow(clippy::upper_case_acronyms)]
+
 use std::{cell::RefCell, rc::Rc};
 
-use crate::{Bus, Instruction};
+use crate::{AddressingMode, Bus, Instruction};
 
 /// The non-maskable interrupt vector.
 ///
@@ -20,6 +22,30 @@ const IRQ_VECTOR: u16 = 0xFFFE;
 
 /// A type that allows shared access with interior mutability.
 type Shared<T> = Rc<RefCell<T>>;
+
+/// Increments the given expression with `wrapping_add` and stores the result.
+///
+/// Optional second argument specifies the amount to add.
+macro_rules! inc {
+    ($var:expr) => {{
+        $var = $var.wrapping_add(1);
+    }};
+    ($var:expr, $x:expr) => {{
+        $var = $var.wrapping_add($x);
+    }};
+}
+
+/// Decrements the given expression with `wrapping_sub` and stores the result.
+///
+/// Optional second argument specifies the amount to subtract.
+macro_rules! dec {
+    ($var:expr) => {{
+        $var = $var.wrapping_sub(1);
+    }};
+    ($var:expr, $x:expr) => {{
+        $var = $var.wrapping_sub($x);
+    }};
+}
 
 /// Represents a specific bit of the processor status register.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,6 +69,49 @@ pub enum StatusFlag {
     N = (1 << 7),
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum Source {
+    /// No interrupt
+    #[default]
+    None,
+    /// Interrupt request
+    IRQ,
+    /// Non-maskable interrupt
+    NMI,
+    /// Physical reset pin
+    RES,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct Interrupt {
+    /// Where the interrupt was sourced from
+    src: Source,
+    /// Whether or not the interrupt has been acknowledged.
+    ack: bool,
+}
+
+impl Interrupt {
+    pub fn new(src: Source) -> Self {
+        Self { src, ack: false }
+    }
+
+    pub fn clear(&mut self) {
+        self.src = Source::None;
+        self.ack = false;
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum State {
+    /// Ready to execute next instruction
+    #[default]
+    Sync,
+    /// Operand needs to be loaded or resolved
+    Operand,
+    /// Instruction can execute with operand
+    Execute,
+}
+
 /// A cycle-accurate 6502 processor emulator, connected to a [`Bus`].
 #[derive(Debug)]
 pub struct Cpu<B: Bus> {
@@ -62,34 +131,48 @@ pub struct Cpu<B: Bus> {
     bus: Shared<B>,
     /// Instruction register.
     ir: Instruction,
-    /// Current operand for the instruction.
-    operand: u16,
+    /// Current operand address for the instruction.
+    ///
+    /// This address has no meaning for `accumulator`, `implied` or `relative`
+    /// modes.
+    op_addr: u16,
+    /// Current operand value for the instruction.
+    ///
+    /// This value is updated during operand resolution.
+    op_val: u8,
+    /// Current CPU interrupt status.
+    interrupt: Interrupt,
     /// The cycle of the current instruction.
     ///
     /// Used as an abstract for timing states, which are quite complex.
     icycle: u8,
     /// Total cycles elapsed during the current program execution.
     cycles: u64,
+    /// Represents the CPU execution state.
+    ///
+    /// Used to coordinate between cycles what actions need to be done.
+    state: State,
 }
 
 impl<B: Bus> Cpu<B> {
     /// Creates a new [`Cpu`] connected to the given [`Bus`].
     pub fn new(bus: Shared<B>) -> Self {
-        let cpu = Self {
+        Self {
             pc: Default::default(),
             s: Default::default(),
             a: Default::default(),
             x: Default::default(),
             y: Default::default(),
-            p: Default::default(),
+            p: 0b0010_0000,
             bus,
             ir: Default::default(),
-            operand: Default::default(),
+            op_addr: Default::default(),
+            op_val: Default::default(),
+            interrupt: Interrupt::new(Source::RES),
             icycle: Default::default(),
             cycles: Default::default(),
-        };
-
-        cpu
+            state: Default::default(),
+        }
     }
 
     /// Returns whether or not the given processor status flag is on.
@@ -114,7 +197,7 @@ impl<B: Bus> Cpu<B> {
         self.set_flag(StatusFlag::Z, value == 0);
     }
 
-    /// Sets the zero flag based on the given value.
+    /// Sets the negative flag based on the given value.
     ///
     /// This method checks if the most significant bit is `1` (e.g.,
     /// `value & 0x80 != 0`).
@@ -144,7 +227,35 @@ impl<B: Bus> Cpu<B> {
 
     /// Executes exactly one clock cycle.
     pub fn clock(&mut self) {
-        todo!()
+        // check for interrupts that can be handled
+        if self.interrupt.src != Source::None {
+            self.handle_interrupt();
+        }
+
+        // SYNC state indicates instruction is ready to start
+        if self.state == State::Sync {
+            self.state = State::Operand;
+
+            // read next instruction, don't increment PC yet
+            self.ir = self.read_u8(self.pc).into();
+
+            // if the handler acknowledged the interrupt, overwrite the IR
+            if self.interrupt.ack {
+                self.ir = Instruction::from(0);
+            }
+        }
+
+        inc!(self.icycle);
+
+        // check if the operand needs be loaded/resolved
+        if self.state == State::Operand {
+            self.resolve_operand();
+        }
+
+        // check if the instruction can execute (e.g., implied)
+        if self.state == State::Execute {
+            self.execute();
+        }
     }
 
     /// Executes the specified number of clock cycles.
@@ -157,7 +268,13 @@ impl<B: Bus> Cpu<B> {
 
     /// Steps through all cycles required to complete a single instruction.
     pub fn step(&mut self) {
-        todo!()
+        loop {
+            self.clock();
+
+            if self.state == State::Sync {
+                break;
+            }
+        }
     }
 
     /// Steps through all cycles required to complete the given number of
@@ -170,21 +287,9 @@ impl<B: Bus> Cpu<B> {
     }
 
     /// Reads a single byte from the bus at the specified address.
-    ///
-    /// Unlike `read` methods, this does not mutate internal state.
     #[inline(always)]
-    fn get_u8(&self, address: u16) -> u8 {
+    fn read_u8(&self, address: u16) -> u8 {
         self.bus.borrow().read(address)
-    }
-
-    /// Reads a byte from the bus at the current program counter address and
-    /// increments it.
-    #[inline(always)]
-    fn read_u8(&mut self) -> u8 {
-        let byte = self.get_u8(self.pc);
-        self.pc = self.pc.wrapping_add(1);
-
-        byte
     }
 
     /// Writes a byte to the bus at the given address.
@@ -197,13 +302,848 @@ impl<B: Bus> Cpu<B> {
     #[inline(always)]
     fn push_u8(&mut self, data: u8) {
         self.write_u8(self.sp_u16(), data);
-        self.s = self.s.wrapping_sub(1);
+        inc!(self.s);
     }
 
     /// Increments the stack pointer and reads the byte at that address.
     #[inline(always)]
-    fn pop_u8(&mut self) -> u8 {
-        self.s = self.s.wrapping_add(1);
-        self.get_u8(self.sp_u16())
+    fn _pop_u8(&mut self) -> u8 {
+        inc!(self.s);
+        self.read_u8(self.sp_u16())
+    }
+
+    fn handle_interrupt(&mut self) {
+        if self.interrupt.src == Source::None {
+            self.interrupt.clear();
+            return;
+        }
+
+        // interrupts can only be handled on SYNC
+        if self.state == State::Sync
+            && ((self.interrupt.src == Source::IRQ && !self.get_flag(StatusFlag::I))
+                || self.interrupt.src == Source::NMI
+                || self.interrupt.src == Source::RES)
+        {
+            self.interrupt.ack = true;
+
+            // clear cycles on a reset
+            if self.interrupt.src == Source::RES {
+                self.cycles = 0;
+            }
+        }
+    }
+
+    /// Sets the CPU in the SYNC state, ready to execute the next instruction.
+    fn set_sync(&mut self) {
+        self.state = State::Sync;
+        self.cycles += self.icycle as u64;
+        self.icycle = 0;
+    }
+
+    fn resolve_operand(&mut self) {
+        use AddressingMode::*;
+
+        let done = match self.ir.mode {
+            Accumulator | Implied => self.imp(),
+            Absolute | AbsoluteX | AbsoluteY => self.abs(),
+            Immediate => self.imm(),
+            Indirect => self.ind(),
+            IndirectX => self.izx(),
+            IndirectY => self.izy(),
+            Relative => self.rel(),
+            ZeroPage | ZeroPageX | ZeroPageY => self.zpg(),
+        };
+
+        if done {
+            self.state = State::Execute;
+        }
+    }
+
+    fn abs(&mut self) -> bool {
+        match self.icycle {
+            1 => inc!(self.pc),
+            2 => {
+                self.op_addr = self.read_u8(self.pc) as u16;
+                inc!(self.pc);
+            }
+            3 => {
+                self.op_addr |= (self.read_u8(self.pc) as u16) << 8;
+                self.op_val = self.read_u8(self.op_addr);
+            }
+            4 => {
+                let offset = if self.ir.mode == AddressingMode::AbsoluteX {
+                    self.x as u16
+                } else if self.ir.mode == AddressingMode::AbsoluteY {
+                    self.y as u16
+                } else {
+                    0
+                };
+                let lo = (self.op_addr & 0x00FF) + offset;
+                self.op_addr = (self.op_addr & 0xFF00) | lo;
+
+                // can return here if page boundary was not crossed
+                if lo & 0xFF00 == 0 {
+                    self.op_val = self.read_u8(self.op_addr);
+                    return true;
+                }
+            }
+            5 => {
+                // emulate ADL carry bit to correct the crossed page boundary
+                inc!(self.op_addr, 0x100);
+                self.op_val = self.read_u8(self.op_addr);
+
+                return true;
+            }
+            _ => unreachable!(),
+        }
+
+        false
+    }
+
+    /// Resolves the operand for `immediate` addressing mode.
+    ///
+    /// Returns `true` when resolution is complete, `false` otherwise.
+    fn imm(&mut self) -> bool {
+        match self.icycle {
+            1 => inc!(self.pc),
+            2 => {
+                self.op_val = self.read_u8(self.pc);
+                return true;
+            }
+            _ => unreachable!(),
+        }
+
+        false
+    }
+
+    /// Resolves the operand for `implied` and `accumulator` addressing modes.
+    ///
+    /// Returns `true` when resolution is complete, `false` otherwise.
+    #[inline(always)]
+    fn imp(&mut self) -> bool {
+        if self.ir.mode == AddressingMode::Accumulator {
+            self.op_val = self.a;
+        }
+
+        true
+    }
+
+    /// Resolves the operand for `indirect` addressing mode.
+    ///
+    /// Note that `JMP` is the only instruction that utilizes this mode.
+    ///
+    /// Returns `true` when resolution is complete, `false` otherwise.
+    fn ind(&mut self) -> bool {
+        match self.icycle {
+            1 => inc!(self.pc),
+            // read low byte $LL
+            2 => {
+                self.op_addr = self.read_u8(self.pc) as u16;
+                inc!(self.pc);
+            }
+            // read high byte $HH
+            3 => self.op_addr |= (self.read_u8(self.pc) as u16) << 8,
+            // read address at ($HHLL)
+            4 => {
+                let lo = self.read_u8(self.op_addr) as u16;
+                let hi = self.read_u8(self.op_addr.wrapping_add(1)) as u16;
+                self.op_addr = (hi << 8) | lo;
+            }
+            // realistically this is where the second byte of ($HHLL) should
+            // be read, but carrying `op_addr` over between cycles would
+            // require a new field that isn't needed elsewhere
+            5 => return true,
+            _ => unreachable!(),
+        }
+
+        false
+    }
+
+    /// Resolves the operand for `(indirect,X)` addressing mode.
+    ///
+    /// Returns `true` when resolution is complete, `false` otherwise.
+    fn izx(&mut self) -> bool {
+        match self.icycle {
+            1 => inc!(self.pc),
+            // read $LL
+            2 => {
+                self.op_addr = self.read_u8(self.pc) as u16;
+                inc!(self.pc);
+            }
+            // increment $LL by X, ignore carry
+            3 => self.op_addr = (self.op_addr + self.x as u16) & 0x00FF,
+            4 => {
+                // read low byte value ($LL+X)
+                let lo = self.read_u8(self.op_addr) as u16;
+                // set high byte to $LL+X+1
+                self.op_addr = ((self.op_addr + 1) & 0x00FF) << 8;
+                // set low byte ($LL+X)
+                self.op_addr |= lo;
+            }
+            5 => {
+                // read high byte ($LL+X+1)
+                let hi = self.read_u8((self.op_addr & 0xFF00) >> 8) as u16;
+                // set high byte ($LL+X+1)
+                self.op_addr = (self.op_addr & 0x00FF) | (hi << 8);
+            }
+            6 => {
+                // load the value
+                self.op_val = self.read_u8(self.op_addr);
+                return true;
+            }
+            _ => unreachable!(),
+        }
+
+        false
+    }
+
+    /// Resolves the operand for `(indirect),Y` addressing mode.
+    ///
+    /// Returns `true` when resolution is complete, `false` otherwise.
+    fn izy(&mut self) -> bool {
+        match self.icycle {
+            1 => inc!(self.pc),
+            // store the zero-page address $LL
+            2 => self.op_addr = self.read_u8(self.pc) as u16,
+            // read low byte value ($LL), set high-byte to $LL+1
+            3 => {
+                let hi = (self.op_addr + 1) & 0x00FF;
+                self.op_addr = self.read_u8(self.op_addr) as u16;
+                self.op_addr |= hi << 8;
+            }
+            // read high byte value ($LL+1)
+            4 => {
+                let hi = self.read_u8((self.op_addr & 0xFF00) >> 8) as u16;
+                self.op_addr = (self.op_addr & 0x00FF) | (hi << 8);
+            }
+            // apply Y offset and check for page boundaries
+            5 => {
+                let mut lo = self.op_addr & 0x00FF;
+                lo += self.y as u16;
+                self.op_addr = (self.op_addr & 0xFF00) | lo;
+                self.op_val = self.read_u8(self.op_addr);
+
+                // can return here if page boundary was not crossed
+                if (lo & 0xFF00) == 0 {
+                    return true;
+                }
+            }
+            // emulate correction on crossing page boundary
+            6 => {
+                inc!(self.op_addr, 0x100);
+                self.op_val = self.read_u8(self.op_addr);
+                return true;
+            }
+            _ => unreachable!(),
+        }
+
+        false
+    }
+
+    /// Resolves the operand for `relative` addressing mode.
+    ///
+    /// Returns `true` when resolution is complete, `false` otherwise.
+    fn rel(&mut self) -> bool {
+        todo!()
+    }
+
+    /// Resolves the operand for all `zeropage` addressing modes.
+    ///
+    /// Returns `true` when resolution is complete, `false` otherwise.
+    fn zpg(&mut self) -> bool {
+        match self.icycle {
+            1 => inc!(self.pc),
+            2 => self.op_addr = self.read_u8(self.pc) as u16,
+            3 => {
+                self.op_val = self.read_u8(self.op_addr);
+
+                // can return here if only zeropage mode
+                if self.ir.mode == AddressingMode::ZeroPage {
+                    return true;
+                } else if self.ir.mode == AddressingMode::ZeroPageX {
+                    self.op_addr = (self.op_addr + self.x as u16) & 0x00FF;
+                } else if self.ir.mode == AddressingMode::ZeroPageY {
+                    self.op_addr = (self.op_addr + self.y as u16) & 0x00FF;
+                }
+            }
+            4 => {
+                self.op_val = self.read_u8(self.op_addr);
+                return true;
+            }
+            _ => unreachable!(),
+        }
+
+        false
+    }
+
+    fn execute(&mut self) {
+        use crate::Mnemonic::*;
+
+        match self.ir.mnemonic {
+            ADC => self.adc(),
+            AND => self.and(),
+            ASL => self.asl(),
+            BCC => self.bcc(),
+            BCS => self.bcs(),
+            BEQ => self.beq(),
+            BIT => self.bit(),
+            BMI => self.bmi(),
+            BNE => self.bne(),
+            BPL => self.bpl(),
+            BRK => self.brk(),
+            BVC => self.bvc(),
+            BVS => self.bvs(),
+            CLC => self.clc(),
+            CLD => self.cld(),
+            CLI => self.cli(),
+            CLV => self.clv(),
+            CMP => self.cmp(),
+            CPX => self.cpx(),
+            CPY => self.cpy(),
+            DEC => self.dec(),
+            DEX => self.dex(),
+            DEY => self.dey(),
+            EOR => self.eor(),
+            INC => self.inc(),
+            INX => self.inx(),
+            INY => self.iny(),
+            JMP => self.jmp(),
+            JSR => self.jsr(),
+            LDA => self.lda(),
+            LDX => self.ldx(),
+            LDY => self.ldy(),
+            LSR => self.lsr(),
+            NOP => self.nop(),
+            ORA => self.ora(),
+            PHA => self.pha(),
+            PHP => self.php(),
+            PLA => self.pla(),
+            PLP => self.plp(),
+            ROL => self.rol(),
+            ROR => self.ror(),
+            RTI => self.rti(),
+            RTS => self.rts(),
+            SBC => self.sbc(),
+            SEC => self.sec(),
+            SED => self.sed(),
+            SEI => self.sei(),
+            STA => self.sta(),
+            STX => self.stx(),
+            STY => self.sty(),
+            TAX => self.tax(),
+            TAY => self.tay(),
+            TSX => self.tsx(),
+            TXA => self.txa(),
+            TXS => self.txs(),
+            TYA => self.tya(),
+            ILLEGAL => self.illegal(),
+        }
+    }
+
+    /// Executes the ADC instruction.
+    fn adc(&mut self) {
+        todo!()
+    }
+
+    /// Executes the AND instruction.
+    fn and(&mut self) {
+        todo!()
+    }
+
+    /// Executes the ASL instruction.
+    fn asl(&mut self) {
+        todo!()
+    }
+
+    /// Executes the BCC instruction.
+    fn bcc(&mut self) {
+        todo!()
+    }
+
+    /// Executes the BCS instruction.
+    fn bcs(&mut self) {
+        todo!()
+    }
+
+    /// Executes the BEQ instruction.
+    fn beq(&mut self) {
+        todo!()
+    }
+
+    /// Executes the BIT instruction.
+    fn bit(&mut self) {
+        todo!()
+    }
+
+    /// Executes the BMI instruction.
+    fn bmi(&mut self) {
+        todo!()
+    }
+
+    /// Executes the BNE instruction.
+    fn bne(&mut self) {
+        todo!()
+    }
+
+    /// Executes the BPL instruction.
+    fn bpl(&mut self) {
+        todo!()
+    }
+
+    /// Executes the BRK instruction.
+    fn brk(&mut self) {
+        use Source::*;
+
+        match self.icycle {
+            1 => inc!(self.pc),
+            // push hi-byte of pc
+            2 => {
+                if self.interrupt.src == NMI || self.interrupt.src == IRQ {
+                    self.push_u8(((self.pc & 0xFF00) >> 8) as u8);
+                }
+                // emulate stack push in read mode for RES pin
+                else {
+                    dec!(self.s);
+                }
+            }
+            // push lo-byte of pc
+            3 => {
+                if self.interrupt.src == NMI || self.interrupt.src == IRQ {
+                    self.push_u8(self.pc as u8);
+                }
+                // emulate stack push in read mode for RES pin
+                else {
+                    dec!(self.s);
+                }
+            }
+            // push status register and set vector for next read
+            4 => {
+                if self.interrupt.src == NMI || self.interrupt.src == IRQ {
+                    self.push_u8(self.p | StatusFlag::_U as u8 | StatusFlag::B as u8);
+                }
+                // emulate stack push in read mode for RES pin
+                else {
+                    dec!(self.s);
+                }
+                self.op_addr = match self.interrupt.src {
+                    IRQ => IRQ_VECTOR,
+                    NMI => NMI_VECTOR,
+                    RES => RES_VECTOR,
+                    _ => unreachable!(),
+                };
+            }
+            // read low byte of vector
+            5 => {
+                self.set_flag(StatusFlag::I, true);
+
+                // clearing here allows NMI/RES to be fired again after this
+                // cycle, but IRQ cannot again since the I flag is set
+                self.interrupt.clear();
+
+                self.pc = self.read_u8(self.op_addr) as u16;
+                inc!(self.op_addr);
+            }
+            // read high byte of vector
+            6 => {
+                self.pc |= (self.read_u8(self.op_addr) as u16) << 8;
+            }
+            _ => self.set_sync(),
+        }
+    }
+
+    /// Executes the BVC instruction.
+    fn bvc(&mut self) {
+        todo!()
+    }
+
+    /// Executes the BVS instruction.
+    fn bvs(&mut self) {
+        todo!()
+    }
+
+    /// Executes the CLC instruction.
+    fn clc(&mut self) {
+        todo!()
+    }
+
+    /// Executes the CLD instruction.
+    fn cld(&mut self) {
+        todo!()
+    }
+
+    /// Executes the CLI instruction.
+    fn cli(&mut self) {
+        todo!()
+    }
+
+    /// Executes the CLV instruction.
+    fn clv(&mut self) {
+        todo!()
+    }
+
+    /// Executes the CMP instruction.
+    fn cmp(&mut self) {
+        todo!()
+    }
+
+    /// Executes the CPX instruction.
+    fn cpx(&mut self) {
+        todo!()
+    }
+
+    /// Executes the CPY instruction.
+    fn cpy(&mut self) {
+        todo!()
+    }
+
+    /// Executes the DEC instruction.
+    fn dec(&mut self) {
+        todo!()
+    }
+
+    /// Executes the DEX instruction.
+    fn dex(&mut self) {
+        todo!()
+    }
+
+    /// Executes the DEY instruction.
+    fn dey(&mut self) {
+        todo!()
+    }
+
+    /// Executes the EOR instruction.
+    fn eor(&mut self) {
+        todo!()
+    }
+
+    /// Executes the INC instruction.
+    fn inc(&mut self) {
+        todo!()
+    }
+
+    /// Executes the INX instruction.
+    fn inx(&mut self) {
+        todo!()
+    }
+
+    /// Executes the INY instruction.
+    fn iny(&mut self) {
+        todo!()
+    }
+
+    /// Executes the JMP instruction.
+    fn jmp(&mut self) {
+        self.pc = self.op_addr;
+        self.set_sync();
+    }
+
+    /// Executes the JSR instruction.
+    fn jsr(&mut self) {
+        todo!()
+    }
+
+    /// Executes the LDA instruction.
+    fn lda(&mut self) {
+        self.a = self.op_val;
+        self.set_flag_zn(self.a);
+        self.set_sync();
+    }
+
+    /// Executes the LDX instruction.
+    fn ldx(&mut self) {
+        todo!()
+    }
+
+    /// Executes the LDY instruction.
+    fn ldy(&mut self) {
+        todo!()
+    }
+
+    /// Executes the LSR instruction.
+    fn lsr(&mut self) {
+        todo!()
+    }
+
+    /// Executes the NOP instruction.
+    fn nop(&mut self) {
+        match self.icycle {
+            1 => inc!(self.pc),
+            _ => self.set_sync(),
+        }
+    }
+
+    /// Executes the ORA instruction.
+    fn ora(&mut self) {
+        todo!()
+    }
+
+    /// Executes the PHA instruction.
+    fn pha(&mut self) {
+        todo!()
+    }
+
+    /// Executes the PHP instruction.
+    fn php(&mut self) {
+        todo!()
+    }
+
+    /// Executes the PLA instruction.
+    fn pla(&mut self) {
+        todo!()
+    }
+
+    /// Executes the PLP instruction.
+    fn plp(&mut self) {
+        todo!()
+    }
+
+    /// Executes the ROL instruction.
+    fn rol(&mut self) {
+        todo!()
+    }
+
+    /// Executes the ROR instruction.
+    fn ror(&mut self) {
+        todo!()
+    }
+
+    /// Executes the RTI instruction.
+    fn rti(&mut self) {
+        todo!()
+    }
+
+    /// Executes the RTS instruction.
+    fn rts(&mut self) {
+        todo!()
+    }
+
+    /// Executes the SBC instruction.
+    fn sbc(&mut self) {
+        todo!()
+    }
+
+    /// Executes the SEC instruction.
+    fn sec(&mut self) {
+        todo!()
+    }
+
+    /// Executes the SED instruction.
+    fn sed(&mut self) {
+        todo!()
+    }
+
+    /// Executes the SEI instruction.
+    fn sei(&mut self) {
+        todo!()
+    }
+
+    /// Executes the STA instruction.
+    fn sta(&mut self) {
+        todo!()
+    }
+
+    /// Executes the STX instruction.
+    fn stx(&mut self) {
+        todo!()
+    }
+
+    /// Executes the STY instruction.
+    fn sty(&mut self) {
+        todo!()
+    }
+
+    /// Executes the TAX instruction.
+    fn tax(&mut self) {
+        todo!()
+    }
+
+    /// Executes the TAY instruction.
+    fn tay(&mut self) {
+        todo!()
+    }
+
+    /// Executes the TSX instruction.
+    fn tsx(&mut self) {
+        todo!()
+    }
+
+    /// Executes the TXA instruction.
+    fn txa(&mut self) {
+        todo!()
+    }
+
+    /// Executes the TXS instruction.
+    fn txs(&mut self) {
+        todo!()
+    }
+
+    /// Executes the TYA instruction.
+    fn tya(&mut self) {
+        todo!()
+    }
+
+    fn illegal(&self) {
+        panic!(
+            "attempted to execute illegal instruction `0x{:02X}`",
+            self.ir.opcode
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Debug)]
+    struct StaticBus(u8);
+
+    impl Bus for StaticBus {
+        fn read(&self, _: u16) -> u8 {
+            self.0
+        }
+
+        fn write(&mut self, _: u16, _: u8) {}
+    }
+
+    fn cpu<B: Bus>(bus: B) -> Cpu<B> {
+        Cpu::new(Rc::new(RefCell::new(bus)))
+    }
+
+    macro_rules! assert_word_eq {
+        ($lhs:expr, $rhs:expr) => {{
+            if $lhs != $rhs {
+                panic!(
+                    "failed byte assertion:\n    \
+                    expr: `{}`\n  \
+                    expect: `0x{:04X}`\n     \
+                    got: `0x{:04X}`\n",
+                    stringify!($lhs),
+                    $rhs,
+                    $lhs,
+                );
+            }
+        }};
+    }
+
+    macro_rules! assert_byte_eq {
+        ($lhs:expr, $rhs:expr) => {{
+            if $lhs != $rhs {
+                panic!(
+                    "failed byte assertion:\n    \
+                    expr: `{}`\n  \
+                    expect: `0x{:02X}`\n     \
+                    got: `0x{:02X}`\n",
+                    stringify!($lhs),
+                    $rhs,
+                    $lhs,
+                );
+            }
+        }};
+    }
+
+    #[test]
+    fn init_reset() {
+        let mut cpu = cpu(StaticBus(0xEA));
+        cpu.step();
+
+        assert_word_eq!(cpu.pc, 0xEAEA);
+        assert_byte_eq!(cpu.s, 0xFD);
+        assert_byte_eq!(cpu.p, 0x24);
+        assert_byte_eq!(cpu.a, 0x00);
+        assert_byte_eq!(cpu.x, 0x00);
+        assert_byte_eq!(cpu.y, 0x00);
+        assert_eq!(cpu.icycle, 0);
+        assert_eq!(cpu.cycles, 7);
+        assert_eq!(cpu.state, State::Sync);
+    }
+
+    #[test]
+    fn sp_addr() {
+        let mut cpu = cpu(StaticBus(0x00));
+
+        cpu.s = 0x00;
+        for sp in 0..=512 {
+            assert_word_eq!(cpu.sp_u16(), (sp & 0x00FF) | 0x0100);
+            inc!(cpu.s);
+        }
+    }
+
+    #[test]
+    fn cycles_nop() {
+        let mut cpu = cpu(StaticBus(0xEA));
+
+        cpu.step_for(3); // reset + LDA #
+
+        // 7 for reset + 4 for 2x NOP
+        assert_eq!(cpu.cycles, 11);
+    }
+
+    #[test]
+    fn cycles_lda_imm() {
+        let mut cpu = cpu(StaticBus(0xA9));
+
+        cpu.step_for(2); // reset + LDA #
+        assert_byte_eq!(cpu.a, 0xA9);
+
+        // 7 for reset + 2 for LDA #
+        assert_eq!(cpu.cycles, 9);
+    }
+
+    #[test]
+    fn cycles_lda_abs() {
+        let mut cpu = cpu(StaticBus(0xAD));
+
+        cpu.step_for(2); // reset + LDA abs
+        assert_byte_eq!(cpu.a, 0xAD);
+
+        // 7 for reset + 4 for LDA abs
+        assert_eq!(cpu.cycles, 11);
+    }
+
+    #[test]
+    fn set_flags() {
+        use StatusFlag::*;
+
+        macro_rules! test_flag {
+            ($cpu:ident, $flag:ident, $on:literal, reset = $reset:literal) => {{
+                if $reset {
+                    $cpu.p = 0;
+                }
+                $cpu.set_flag($flag, $on);
+                assert_eq!(
+                    $cpu.get_flag($flag),
+                    $on,
+                    "Failed to set flag `{:?}` ({:08b}) to `{}` (status flags: {:08b})",
+                    $flag,
+                    $flag as u8,
+                    $on,
+                    $cpu.p
+                );
+            }};
+        }
+
+        let mut cpu = cpu(StaticBus(0xEA));
+
+        cpu.p = 0;
+        test_flag!(cpu, N, true, reset = true);
+        test_flag!(cpu, V, false, reset = true);
+        test_flag!(cpu, _U, true, reset = true);
+        test_flag!(cpu, B, true, reset = true);
+        test_flag!(cpu, D, true, reset = true);
+        test_flag!(cpu, I, false, reset = true);
+        test_flag!(cpu, Z, true, reset = true);
+        test_flag!(cpu, C, false, reset = true);
+
+        cpu.p = 0;
+        test_flag!(cpu, N, true, reset = false);
+        test_flag!(cpu, V, true, reset = false);
+        test_flag!(cpu, _U, true, reset = false);
+        test_flag!(cpu, B, true, reset = false);
+        test_flag!(cpu, D, true, reset = false);
+        test_flag!(cpu, I, true, reset = false);
+        test_flag!(cpu, Z, true, reset = false);
+        test_flag!(cpu, C, true, reset = false);
+
+        assert_byte_eq!(cpu.p, 0xFF);
     }
 }
