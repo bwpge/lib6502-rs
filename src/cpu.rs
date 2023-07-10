@@ -373,6 +373,13 @@ impl<B: Bus> Cpu<B> {
     fn resolve_operand(&mut self) {
         use AddressingMode::*;
 
+        // every cycle needs to at least load the instruction, so that is
+        // emulated here by taking the first cycle to increment the pc
+        if self.icycle == 1 {
+            inc!(self.pc);
+            return;
+        }
+
         let done = match self.ir.mode {
             Accumulator | Implied => self.imp(),
             Absolute | AbsoluteX | AbsoluteY => self.abs(),
@@ -384,21 +391,28 @@ impl<B: Bus> Cpu<B> {
             ZeroPage | ZeroPageX | ZeroPageY => self.zpg(),
         };
 
+        // consume total cycles here so execution can count the correct icycle
         if done {
+            self.cycles += self.icycle as u64;
+            self.icycle = 0;
             self.state = State::Execute;
         }
     }
 
     fn abs(&mut self) -> bool {
         match self.icycle {
-            1 => inc!(self.pc),
             2 => {
                 self.op_addr = self.read_u8(self.pc) as u16;
                 inc!(self.pc);
             }
             3 => {
                 self.op_addr |= (self.read_u8(self.pc) as u16) << 8;
+                inc!(self.pc);
                 self.op_val = self.read_u8(self.op_addr);
+
+                if self.ir.mode == AddressingMode::Absolute {
+                    return true;
+                }
             }
             4 => {
                 let offset = if self.ir.mode == AddressingMode::AbsoluteX {
@@ -406,7 +420,7 @@ impl<B: Bus> Cpu<B> {
                 } else if self.ir.mode == AddressingMode::AbsoluteY {
                     self.y as u16
                 } else {
-                    0
+                    unreachable!();
                 };
                 let lo = (self.op_addr & 0x00FF) + offset;
                 self.op_addr = (self.op_addr & 0xFF00) | lo;
@@ -434,16 +448,16 @@ impl<B: Bus> Cpu<B> {
     ///
     /// Returns `true` when resolution is complete, `false` otherwise.
     fn imm(&mut self) -> bool {
-        match self.icycle {
-            1 => inc!(self.pc),
-            2 => {
-                self.op_val = self.read_u8(self.pc);
-                return true;
-            }
-            _ => unreachable!(),
-        }
+        assert_eq!(
+            self.icycle, 2,
+            "unexpected execution cycle `{}` (expected `2`)",
+            self.icycle
+        );
 
-        false
+        self.op_val = self.read_u8(self.pc);
+        inc!(self.pc);
+
+        true
     }
 
     /// Resolves the operand for `implied` and `accumulator` addressing modes.
@@ -451,6 +465,12 @@ impl<B: Bus> Cpu<B> {
     /// Returns `true` when resolution is complete, `false` otherwise.
     #[inline(always)]
     fn imp(&mut self) -> bool {
+        assert_eq!(
+            self.icycle, 2,
+            "unexpected execution cycle `{}` (expected `2`)",
+            self.icycle
+        );
+
         if self.ir.mode == AddressingMode::Accumulator {
             self.op_val = self.a;
         }
@@ -465,7 +485,6 @@ impl<B: Bus> Cpu<B> {
     /// Returns `true` when resolution is complete, `false` otherwise.
     fn ind(&mut self) -> bool {
         match self.icycle {
-            1 => inc!(self.pc),
             // read low byte $LL
             2 => {
                 self.op_addr = self.read_u8(self.pc) as u16;
@@ -494,7 +513,6 @@ impl<B: Bus> Cpu<B> {
     /// Returns `true` when resolution is complete, `false` otherwise.
     fn izx(&mut self) -> bool {
         match self.icycle {
-            1 => inc!(self.pc),
             // read $LL
             2 => {
                 self.op_addr = self.read_u8(self.pc) as u16;
@@ -532,7 +550,6 @@ impl<B: Bus> Cpu<B> {
     /// Returns `true` when resolution is complete, `false` otherwise.
     fn izy(&mut self) -> bool {
         match self.icycle {
-            1 => inc!(self.pc),
             // store the zero-page address $LL
             2 => self.op_addr = self.read_u8(self.pc) as u16,
             // read low byte value ($LL), set high-byte to $LL+1
@@ -582,8 +599,10 @@ impl<B: Bus> Cpu<B> {
     /// Returns `true` when resolution is complete, `false` otherwise.
     fn zpg(&mut self) -> bool {
         match self.icycle {
-            1 => inc!(self.pc),
-            2 => self.op_addr = self.read_u8(self.pc) as u16,
+            2 => {
+                self.op_addr = self.read_u8(self.pc) as u16;
+                inc!(self.pc);
+            }
             3 => {
                 self.op_val = self.read_u8(self.op_addr);
 
@@ -677,7 +696,9 @@ impl<B: Bus> Cpu<B> {
 
     /// Executes the AND instruction.
     fn and(&mut self) {
-        todo!()
+        self.a &= self.op_val;
+        self.set_flag_zn(self.a);
+        self.set_sync();
     }
 
     /// Executes the ASL instruction.
@@ -725,9 +746,8 @@ impl<B: Bus> Cpu<B> {
         use Source::*;
 
         match self.icycle {
-            1 => inc!(self.pc),
             // push hi-byte of pc
-            2 => {
+            0 => {
                 if self.interrupt.src == NMI || self.interrupt.src == IRQ {
                     self.push_u8(((self.pc & 0xFF00) >> 8) as u8);
                 }
@@ -737,7 +757,7 @@ impl<B: Bus> Cpu<B> {
                 }
             }
             // push lo-byte of pc
-            3 => {
+            1 => {
                 if self.interrupt.src == NMI || self.interrupt.src == IRQ {
                     self.push_u8(self.pc as u8);
                 }
@@ -747,7 +767,7 @@ impl<B: Bus> Cpu<B> {
                 }
             }
             // push status register and set vector for next read
-            4 => {
+            2 => {
                 if self.interrupt.src == NMI || self.interrupt.src == IRQ {
                     self.push_u8(self.p | StatusFlag::_U as u8 | StatusFlag::B as u8);
                 }
@@ -763,7 +783,7 @@ impl<B: Bus> Cpu<B> {
                 };
             }
             // read low byte of vector
-            5 => {
+            3 => {
                 self.set_flag(StatusFlag::I, true);
 
                 // clearing here allows NMI/RES to be fired again after this
@@ -774,10 +794,11 @@ impl<B: Bus> Cpu<B> {
                 inc!(self.op_addr);
             }
             // read high byte of vector
-            6 => {
+            4 => {
                 self.pc |= (self.read_u8(self.op_addr) as u16) << 8;
             }
-            _ => self.set_sync(),
+            5 => self.set_sync(),
+            _ => unreachable!(),
         }
     }
 
@@ -874,19 +895,56 @@ impl<B: Bus> Cpu<B> {
 
     /// Executes the LDA instruction.
     fn lda(&mut self) {
-        self.a = self.op_val;
-        self.set_flag_zn(self.a);
-        self.set_sync();
+        match self.icycle {
+            0 => {
+                self.a = self.op_val;
+                self.set_flag_zn(self.a);
+
+                if self.ir.mode == AddressingMode::Immediate {
+                    self.set_sync();
+                }
+            }
+            1 => {
+                self.set_sync();
+            }
+            _ => unreachable!(),
+        }
     }
 
     /// Executes the LDX instruction.
     fn ldx(&mut self) {
-        todo!()
+        match self.icycle {
+            0 => {
+                self.x = self.op_val;
+                self.set_flag_zn(self.x);
+
+                if self.ir.mode == AddressingMode::Immediate {
+                    self.set_sync();
+                }
+            }
+            1 => {
+                self.set_sync();
+            }
+            _ => unreachable!(),
+        }
     }
 
     /// Executes the LDY instruction.
     fn ldy(&mut self) {
-        todo!()
+        match self.icycle {
+            0 => {
+                self.y = self.op_val;
+                self.set_flag_zn(self.y);
+
+                if self.ir.mode == AddressingMode::Immediate {
+                    self.set_sync();
+                }
+            }
+            1 => {
+                self.set_sync();
+            }
+            _ => unreachable!(),
+        }
     }
 
     /// Executes the LSR instruction.
@@ -895,11 +953,9 @@ impl<B: Bus> Cpu<B> {
     }
 
     /// Executes the NOP instruction.
+    #[inline(always)]
     fn nop(&mut self) {
-        match self.icycle {
-            1 => inc!(self.pc),
-            _ => self.set_sync(),
-        }
+        self.set_sync();
     }
 
     /// Executes the ORA instruction.
@@ -969,17 +1025,23 @@ impl<B: Bus> Cpu<B> {
 
     /// Executes the STA instruction.
     fn sta(&mut self) {
-        todo!()
+        self.write_u8(self.op_addr, self.a);
+        self.set_sync();
     }
 
     /// Executes the STX instruction.
     fn stx(&mut self) {
-        todo!()
+        self.write_u8(self.op_addr, self.x);
+        self.set_sync();
     }
 
     /// Executes the STY instruction.
     fn sty(&mut self) {
-        todo!()
+        match self.icycle {
+            0 => self.write_u8(self.op_addr, self.y),
+            1 => self.set_sync(),
+            _ => unreachable!(),
+        }
     }
 
     /// Executes the TAX instruction.
