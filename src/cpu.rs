@@ -103,11 +103,11 @@ impl Interrupt {
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 enum State {
-    /// Ready to execute next instruction
+    /// Ready to start next instruction or handle interrupts
     #[default]
     Sync,
-    /// Operand needs to be loaded or resolved
-    Operand,
+    /// Instruction or operand needs to be loaded
+    Fetch,
     /// Instruction can execute with operand
     Execute,
 }
@@ -175,6 +175,36 @@ impl<B: Bus> Cpu<B> {
         }
     }
 
+    /// Returns the `PC` address.
+    pub fn pc(&self) -> u16 {
+        self.pc
+    }
+
+    /// Returns the contents of the processor status (`P`) register.
+    pub fn p(&self) -> u8 {
+        self.p
+    }
+
+    /// Returns the contents of the accumulator (`A`) register.
+    pub fn a(&self) -> u8 {
+        self.a
+    }
+
+    /// Returns the contents of the X-index (`X`) register.
+    pub fn x(&self) -> u8 {
+        self.x
+    }
+
+    /// Returns the contents of the Y-index (`Y`) register.
+    pub fn y(&self) -> u8 {
+        self.y
+    }
+
+    /// Returns the total number of CPU cycles executed since the last reset.
+    pub fn cycles(&self) -> u64 {
+        self.cycles + (self.icycle as u64)
+    }
+
     /// Returns whether or not the given processor status flag is on.
     pub fn get_flag(&self, flag: StatusFlag) -> bool {
         (self.p & (flag as u8)) > 0
@@ -234,7 +264,7 @@ impl<B: Bus> Cpu<B> {
 
         // SYNC state indicates instruction is ready to start
         if self.state == State::Sync {
-            self.state = State::Operand;
+            self.state = State::Fetch;
 
             // read next instruction, don't increment PC yet
             self.ir = self.read_u8(self.pc).into();
@@ -248,11 +278,11 @@ impl<B: Bus> Cpu<B> {
         inc!(self.icycle);
 
         // check if the operand needs be loaded/resolved
-        if self.state == State::Operand {
+        if self.state == State::Fetch {
             self.resolve_operand();
         }
 
-        // check if the instruction can execute (e.g., implied)
+        // check if the instruction can execute
         if self.state == State::Execute {
             self.execute();
         }
