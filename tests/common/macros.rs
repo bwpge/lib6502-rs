@@ -50,3 +50,30 @@ macro_rules! asm {
         )+
     }
 }
+
+#[macro_export]
+macro_rules! assert_state {
+    ($cpu:ident, $($tt:tt = $val:literal),* $(,)?) => {
+        $(
+            assert_state!($cpu, $tt, $val);
+        )*
+    };
+    ($cpu:ident, pc, $pc:literal) => {{
+        assert_word_eq!($cpu.pc(), $pc);
+    }};
+    ($cpu:ident, p, $p:literal) => {{
+        assert_byte_eq!($cpu.p(), $p);
+    }};
+    ($cpu:ident, s, $s:literal) => {{
+        assert_word_eq!($cpu.sp_u16(), $s);
+    }};
+    ($cpu:ident, a, $a:literal) => {{
+        assert_byte_eq!($cpu.a(), $a);
+    }};
+    ($cpu:ident, x, $x:literal) => {{
+        assert_byte_eq!($cpu.x(), $x);
+    }};
+    ($cpu:ident, y, $y:literal) => {{
+        assert_byte_eq!($cpu.y(), $y);
+    }};
+}

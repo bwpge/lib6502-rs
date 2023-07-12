@@ -2,7 +2,7 @@ mod common;
 
 use std::{cell::RefCell, rc::Rc};
 
-use lib6502::{Bus, Cpu, StatusFlag};
+use lib6502::{Bus, Cpu};
 
 use crate::common::Ram;
 
@@ -34,11 +34,15 @@ fn load_and_store() {
     cpu.step();
 
     // validate start state
-    assert_word_eq!(cpu.pc(), 0xC000);
-    assert_byte_eq!(cpu.a(), 0x00);
-    assert_byte_eq!(cpu.x(), 0x00);
-    assert_byte_eq!(cpu.y(), 0x00);
-    assert_byte_eq!(cpu.p(), 0x24);
+    assert_state!(
+        cpu,
+        pc = 0xC000,
+        p = 0x24,
+        s = 0x01FD,
+        a = 0x00,
+        x = 0x00,
+        y = 0x00,
+    );
     for i in 0..=0xBFFF {
         assert_byte_eq!(ram.borrow().read(i), 0x00);
     }
@@ -47,12 +51,18 @@ fn load_and_store() {
     cpu.step_for(14);
 
     // validate final state
-    assert_word_eq!(cpu.pc(), 0xC60C);
-    assert_eq!(cpu.get_flag(StatusFlag::Z), true);
-    assert_byte_eq!(cpu.a(), 0x42);
-    assert_byte_eq!(cpu.x(), 0x00);
-    assert_byte_eq!(cpu.y(), 0x69);
+    assert_state!(
+        cpu,
+        pc = 0xC60C,
+        p = 0x26,
+        s = 0x01FD,
+        a = 0x42,
+        x = 0x00,
+        y = 0x69,
+    );
     assert_eq!(cpu.cycles(), 42);
+
+    // validate memory writes
     assert_byte_eq!(ram.borrow().read(0x0000), 0x01);
     assert_byte_eq!(ram.borrow().read(0x0010), 0x01);
     assert_byte_eq!(ram.borrow().read(0x0011), 0x01);
