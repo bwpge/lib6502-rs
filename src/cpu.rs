@@ -129,17 +129,19 @@ pub struct Cpu<B: Bus> {
     y: u8,
     /// Internal reference to the connected bus.
     bus: Shared<B>,
-    /// Instruction register.
+    /// The instruction register (`IR`).
+    ///
+    /// This value is updated *after* the instruction is decoded on the first
+    /// cycle (e.g., when SYNC is high).
     ir: Instruction,
-    /// Current operand address for the instruction.
+    /// Combination of the ADL/ADH lines.
+    addr: u16,
+    /// Emulates the data bus (`db`), which would hold data to read or write.
     ///
-    /// This address has no meaning for `accumulator`, `implied` or `relative`
-    /// modes.
-    op_addr: u16,
-    /// Current operand value for the instruction.
-    ///
-    /// This value is updated during operand resolution.
-    op_val: u8,
+    /// This is generally abstracted away since the emulation does not use a
+    /// RW signal to communicate with the bus. Instead this field is used to
+    /// hold data between cycles.
+    data: u8,
     /// Current CPU interrupt status.
     interrupt: Interrupt,
     /// The cycle of the current instruction.
@@ -166,8 +168,8 @@ impl<B: Bus> Cpu<B> {
             p: 0b0010_0000,
             bus,
             ir: Default::default(),
-            op_addr: Default::default(),
-            op_val: Default::default(),
+            addr: Default::default(),
+            data: Default::default(),
             interrupt: Interrupt::new(Source::RES),
             icycle: Default::default(),
             cycles: Default::default(),
@@ -203,6 +205,14 @@ impl<B: Bus> Cpu<B> {
     /// Returns the total number of CPU cycles executed since the last reset.
     pub fn cycles(&self) -> u64 {
         self.cycles + (self.icycle as u64)
+    }
+
+    /// Emulates the SYNC pin by checking the execution state of the CPU.
+    ///
+    /// Returns `true` if an instruction will start on the current cycle,
+    /// `false` otherwise.
+    pub fn is_sync(&self) -> bool {
+        self.state == State::Sync
     }
 
     /// Returns whether or not the given processor status flag is on.
@@ -402,13 +412,13 @@ impl<B: Bus> Cpu<B> {
     fn abs(&mut self) -> bool {
         match self.icycle {
             2 => {
-                self.op_addr = self.read_u8(self.pc) as u16;
+                self.addr = self.read_u8(self.pc) as u16;
                 inc!(self.pc);
             }
             3 => {
-                self.op_addr |= (self.read_u8(self.pc) as u16) << 8;
+                self.addr |= (self.read_u8(self.pc) as u16) << 8;
                 inc!(self.pc);
-                self.op_val = self.read_u8(self.op_addr);
+                self.data = self.read_u8(self.addr);
 
                 if self.ir.mode == AddressingMode::Absolute {
                     return true;
@@ -422,19 +432,19 @@ impl<B: Bus> Cpu<B> {
                 } else {
                     unreachable!();
                 };
-                let lo = (self.op_addr & 0x00FF) + offset;
-                self.op_addr = (self.op_addr & 0xFF00) | lo;
+                let lo = (self.addr & 0x00FF) + offset;
+                self.addr = (self.addr & 0xFF00) | lo;
 
                 // can return here if page boundary was not crossed
                 if lo & 0xFF00 == 0 {
-                    self.op_val = self.read_u8(self.op_addr);
+                    self.data = self.read_u8(self.addr);
                     return true;
                 }
             }
             5 => {
                 // emulate ADL carry bit to correct the crossed page boundary
-                inc!(self.op_addr, 0x100);
-                self.op_val = self.read_u8(self.op_addr);
+                inc!(self.addr, 0x100);
+                self.data = self.read_u8(self.addr);
 
                 return true;
             }
@@ -454,7 +464,7 @@ impl<B: Bus> Cpu<B> {
             self.icycle
         );
 
-        self.op_val = self.read_u8(self.pc);
+        self.data = self.read_u8(self.pc);
         inc!(self.pc);
 
         true
@@ -472,7 +482,7 @@ impl<B: Bus> Cpu<B> {
         );
 
         if self.ir.mode == AddressingMode::Accumulator {
-            self.op_val = self.a;
+            self.data = self.a;
         }
 
         true
@@ -487,16 +497,16 @@ impl<B: Bus> Cpu<B> {
         match self.icycle {
             // read low byte $LL
             2 => {
-                self.op_addr = self.read_u8(self.pc) as u16;
+                self.addr = self.read_u8(self.pc) as u16;
                 inc!(self.pc);
             }
             // read high byte $HH
-            3 => self.op_addr |= (self.read_u8(self.pc) as u16) << 8,
+            3 => self.addr |= (self.read_u8(self.pc) as u16) << 8,
             // read address at ($HHLL)
             4 => {
-                let lo = self.read_u8(self.op_addr) as u16;
-                let hi = self.read_u8(self.op_addr.wrapping_add(1)) as u16;
-                self.op_addr = (hi << 8) | lo;
+                let lo = self.read_u8(self.addr) as u16;
+                let hi = self.read_u8(self.addr.wrapping_add(1)) as u16;
+                self.addr = (hi << 8) | lo;
             }
             // realistically this is where the second byte of ($HHLL) should
             // be read, but carrying `op_addr` over between cycles would
@@ -515,28 +525,28 @@ impl<B: Bus> Cpu<B> {
         match self.icycle {
             // read $LL
             2 => {
-                self.op_addr = self.read_u8(self.pc) as u16;
+                self.addr = self.read_u8(self.pc) as u16;
                 inc!(self.pc);
             }
             // increment $LL by X, ignore carry
-            3 => self.op_addr = (self.op_addr + self.x as u16) & 0x00FF,
+            3 => self.addr = (self.addr + self.x as u16) & 0x00FF,
             4 => {
                 // read low byte value ($LL+X)
-                let lo = self.read_u8(self.op_addr) as u16;
+                let lo = self.read_u8(self.addr) as u16;
                 // set high byte to $LL+X+1
-                self.op_addr = ((self.op_addr + 1) & 0x00FF) << 8;
+                self.addr = ((self.addr + 1) & 0x00FF) << 8;
                 // set low byte ($LL+X)
-                self.op_addr |= lo;
+                self.addr |= lo;
             }
             5 => {
                 // read high byte ($LL+X+1)
-                let hi = self.read_u8((self.op_addr & 0xFF00) >> 8) as u16;
+                let hi = self.read_u8((self.addr & 0xFF00) >> 8) as u16;
                 // set high byte ($LL+X+1)
-                self.op_addr = (self.op_addr & 0x00FF) | (hi << 8);
+                self.addr = (self.addr & 0x00FF) | (hi << 8);
             }
             6 => {
                 // load the value
-                self.op_val = self.read_u8(self.op_addr);
+                self.data = self.read_u8(self.addr);
                 return true;
             }
             _ => unreachable!(),
@@ -551,24 +561,24 @@ impl<B: Bus> Cpu<B> {
     fn izy(&mut self) -> bool {
         match self.icycle {
             // store the zero-page address $LL
-            2 => self.op_addr = self.read_u8(self.pc) as u16,
+            2 => self.addr = self.read_u8(self.pc) as u16,
             // read low byte value ($LL), set high-byte to $LL+1
             3 => {
-                let hi = (self.op_addr + 1) & 0x00FF;
-                self.op_addr = self.read_u8(self.op_addr) as u16;
-                self.op_addr |= hi << 8;
+                let hi = (self.addr + 1) & 0x00FF;
+                self.addr = self.read_u8(self.addr) as u16;
+                self.addr |= hi << 8;
             }
             // read high byte value ($LL+1)
             4 => {
-                let hi = self.read_u8((self.op_addr & 0xFF00) >> 8) as u16;
-                self.op_addr = (self.op_addr & 0x00FF) | (hi << 8);
+                let hi = self.read_u8((self.addr & 0xFF00) >> 8) as u16;
+                self.addr = (self.addr & 0x00FF) | (hi << 8);
             }
             // apply Y offset and check for page boundaries
             5 => {
-                let mut lo = self.op_addr & 0x00FF;
+                let mut lo = self.addr & 0x00FF;
                 lo += self.y as u16;
-                self.op_addr = (self.op_addr & 0xFF00) | lo;
-                self.op_val = self.read_u8(self.op_addr);
+                self.addr = (self.addr & 0xFF00) | lo;
+                self.data = self.read_u8(self.addr);
 
                 // can return here if page boundary was not crossed
                 if (lo & 0xFF00) == 0 {
@@ -577,8 +587,8 @@ impl<B: Bus> Cpu<B> {
             }
             // emulate correction on crossing page boundary
             6 => {
-                inc!(self.op_addr, 0x100);
-                self.op_val = self.read_u8(self.op_addr);
+                inc!(self.addr, 0x100);
+                self.data = self.read_u8(self.addr);
                 return true;
             }
             _ => unreachable!(),
@@ -600,23 +610,23 @@ impl<B: Bus> Cpu<B> {
     fn zpg(&mut self) -> bool {
         match self.icycle {
             2 => {
-                self.op_addr = self.read_u8(self.pc) as u16;
+                self.addr = self.read_u8(self.pc) as u16;
                 inc!(self.pc);
             }
             3 => {
-                self.op_val = self.read_u8(self.op_addr);
+                self.data = self.read_u8(self.addr);
 
                 // can return here if only zeropage mode
                 if self.ir.mode == AddressingMode::ZeroPage {
                     return true;
                 } else if self.ir.mode == AddressingMode::ZeroPageX {
-                    self.op_addr = (self.op_addr + self.x as u16) & 0x00FF;
+                    self.addr = (self.addr + self.x as u16) & 0x00FF;
                 } else if self.ir.mode == AddressingMode::ZeroPageY {
-                    self.op_addr = (self.op_addr + self.y as u16) & 0x00FF;
+                    self.addr = (self.addr + self.y as u16) & 0x00FF;
                 }
             }
             4 => {
-                self.op_val = self.read_u8(self.op_addr);
+                self.data = self.read_u8(self.addr);
                 return true;
             }
             _ => unreachable!(),
@@ -696,7 +706,7 @@ impl<B: Bus> Cpu<B> {
 
     /// Executes the AND instruction.
     fn and(&mut self) {
-        self.a &= self.op_val;
+        self.a &= self.data;
         self.set_flag_zn(self.a);
         self.set_sync();
     }
@@ -775,7 +785,7 @@ impl<B: Bus> Cpu<B> {
                 else {
                     dec!(self.s);
                 }
-                self.op_addr = match self.interrupt.src {
+                self.addr = match self.interrupt.src {
                     IRQ => IRQ_VECTOR,
                     NMI => NMI_VECTOR,
                     RES => RES_VECTOR,
@@ -790,12 +800,12 @@ impl<B: Bus> Cpu<B> {
                 // cycle, but IRQ cannot again since the I flag is set
                 self.interrupt.clear();
 
-                self.pc = self.read_u8(self.op_addr) as u16;
-                inc!(self.op_addr);
+                self.pc = self.read_u8(self.addr) as u16;
+                inc!(self.addr);
             }
             // read high byte of vector
             4 => {
-                self.pc |= (self.read_u8(self.op_addr) as u16) << 8;
+                self.pc |= (self.read_u8(self.addr) as u16) << 8;
             }
             5 => self.set_sync(),
             _ => unreachable!(),
@@ -884,7 +894,7 @@ impl<B: Bus> Cpu<B> {
 
     /// Executes the JMP instruction.
     fn jmp(&mut self) {
-        self.pc = self.op_addr;
+        self.pc = self.addr;
         self.set_sync();
     }
 
@@ -897,7 +907,7 @@ impl<B: Bus> Cpu<B> {
     fn lda(&mut self) {
         match self.icycle {
             0 => {
-                self.a = self.op_val;
+                self.a = self.data;
                 self.set_flag_zn(self.a);
 
                 if self.ir.mode == AddressingMode::Immediate {
@@ -915,7 +925,7 @@ impl<B: Bus> Cpu<B> {
     fn ldx(&mut self) {
         match self.icycle {
             0 => {
-                self.x = self.op_val;
+                self.x = self.data;
                 self.set_flag_zn(self.x);
 
                 if self.ir.mode == AddressingMode::Immediate {
@@ -933,7 +943,7 @@ impl<B: Bus> Cpu<B> {
     fn ldy(&mut self) {
         match self.icycle {
             0 => {
-                self.y = self.op_val;
+                self.y = self.data;
                 self.set_flag_zn(self.y);
 
                 if self.ir.mode == AddressingMode::Immediate {
@@ -1025,20 +1035,20 @@ impl<B: Bus> Cpu<B> {
 
     /// Executes the STA instruction.
     fn sta(&mut self) {
-        self.write_u8(self.op_addr, self.a);
+        self.write_u8(self.addr, self.a);
         self.set_sync();
     }
 
     /// Executes the STX instruction.
     fn stx(&mut self) {
-        self.write_u8(self.op_addr, self.x);
+        self.write_u8(self.addr, self.x);
         self.set_sync();
     }
 
     /// Executes the STY instruction.
     fn sty(&mut self) {
         match self.icycle {
-            0 => self.write_u8(self.op_addr, self.y),
+            0 => self.write_u8(self.addr, self.y),
             1 => self.set_sync(),
             _ => unreachable!(),
         }
