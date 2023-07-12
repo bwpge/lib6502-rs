@@ -342,7 +342,7 @@ impl<B: Bus> Cpu<B> {
     #[inline(always)]
     fn push_u8(&mut self, data: u8) {
         self.write_u8(self.sp_u16(), data);
-        inc!(self.s);
+        dec!(self.s);
     }
 
     /// Increments the stack pointer and reads the byte at that address.
