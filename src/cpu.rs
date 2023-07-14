@@ -813,22 +813,42 @@ impl<B: Bus> Cpu<B> {
 
     /// Executes the CLC instruction.
     fn clc(&mut self) {
-        todo!()
+        if !self.resolve() {
+            return;
+        }
+
+        self.set_flag(StatusFlag::C, false);
+        self.state = State::T1;
     }
 
     /// Executes the CLD instruction.
     fn cld(&mut self) {
-        todo!()
+        if !self.resolve() {
+            return;
+        }
+
+        self.set_flag(StatusFlag::D, false);
+        self.state = State::T1;
     }
 
     /// Executes the CLI instruction.
     fn cli(&mut self) {
-        todo!()
+        if !self.resolve() {
+            return;
+        }
+
+        self.set_flag(StatusFlag::I, false);
+        self.state = State::T1;
     }
 
     /// Executes the CLV instruction.
     fn clv(&mut self) {
-        todo!()
+        if !self.resolve() {
+            return;
+        }
+
+        self.set_flag(StatusFlag::V, false);
+        self.state = State::T1;
     }
 
     /// Executes the CMP instruction.
@@ -1062,17 +1082,32 @@ impl<B: Bus> Cpu<B> {
 
     /// Executes the SEC instruction.
     fn sec(&mut self) {
-        todo!()
+        if !self.resolve() {
+            return;
+        }
+
+        self.set_flag(StatusFlag::C, true);
+        self.state = State::T1;
     }
 
     /// Executes the SED instruction.
     fn sed(&mut self) {
-        todo!()
+        if !self.resolve() {
+            return;
+        }
+
+        self.set_flag(StatusFlag::D, true);
+        self.state = State::T1;
     }
 
     /// Executes the SEI instruction.
     fn sei(&mut self) {
-        todo!()
+        if !self.resolve() {
+            return;
+        }
+
+        self.set_flag(StatusFlag::I, true);
+        self.state = State::T1;
     }
 
     /// Executes the STA instruction.
@@ -1107,32 +1142,67 @@ impl<B: Bus> Cpu<B> {
 
     /// Executes the TAX instruction.
     fn tax(&mut self) {
-        todo!()
+        if !self.resolve() {
+            return;
+        }
+
+        self.x = self.a;
+        self.set_flag_zn(self.x);
+        self.state = State::T1;
     }
 
     /// Executes the TAY instruction.
     fn tay(&mut self) {
-        todo!()
+        if !self.resolve() {
+            return;
+        }
+
+        self.y = self.a;
+        self.set_flag_zn(self.y);
+        self.state = State::T1;
     }
 
     /// Executes the TSX instruction.
     fn tsx(&mut self) {
-        todo!()
+        if !self.resolve() {
+            return;
+        }
+
+        self.x = self.s;
+        self.set_flag_zn(self.x);
+        self.state = State::T1;
     }
 
     /// Executes the TXA instruction.
     fn txa(&mut self) {
-        todo!()
+        if !self.resolve() {
+            return;
+        }
+
+        self.a = self.x;
+        self.set_flag_zn(self.a);
+        self.state = State::T1;
     }
 
     /// Executes the TXS instruction.
     fn txs(&mut self) {
-        todo!()
+        if !self.resolve() {
+            return;
+        }
+
+        self.s = self.x;
+        self.state = State::T1;
     }
 
     /// Executes the TYA instruction.
     fn tya(&mut self) {
-        todo!()
+        if !self.resolve() {
+            return;
+        }
+
+        self.a = self.y;
+        self.set_flag_zn(self.a);
+        self.state = State::T1;
     }
 
     fn illegal(&self) {
