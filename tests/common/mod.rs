@@ -1,6 +1,8 @@
 pub mod macros;
 
-use lib6502::Bus;
+use std::{cell::RefCell, rc::Rc};
+
+use lib6502::{Bus, Cpu};
 
 pub struct Ram {
     mem: Box<[u8; 0x10000]>,
@@ -33,4 +35,12 @@ impl Bus for Ram {
     fn write(&mut self, address: u16, data: u8) {
         self.mem[address as usize] = data;
     }
+}
+
+pub fn setup(prog: [u8; 0x10000]) -> (Rc<RefCell<Ram>>, Cpu<Ram>) {
+    let ram = Rc::new(RefCell::new(Ram::new().load_at(&prog, 0)));
+    let mut cpu = Cpu::new(ram.clone());
+    cpu.step();
+
+    (ram, cpu)
 }

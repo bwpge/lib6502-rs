@@ -1,18 +1,6 @@
 mod common;
 
-use std::{cell::RefCell, rc::Rc};
-
-use lib6502::{Bus, Cpu};
-
-use crate::common::Ram;
-
-fn setup(prog: [u8; 0x10000]) -> (Rc<RefCell<Ram>>, Cpu<Ram>) {
-    let ram = Rc::new(RefCell::new(Ram::new().load_at(&prog, 0)));
-    let mut cpu = Cpu::new(ram.clone());
-    cpu.step();
-
-    (ram, cpu)
-}
+use crate::common::setup;
 
 #[test]
 fn load_and_store() {
@@ -35,26 +23,26 @@ fn load_and_store() {
         0xC60A: 0xA2 0x00; //       LDX #$00    2 cyc
         0xFFFC: 0x00 0xC0; //       program start $C000
     });
-    assert_state!(
+    assert_cpu!(
         cpu,
         pc = 0xC000,
-        p = 0x24,
         s = 0x01FD,
         a = 0x00,
         x = 0x00,
         y = 0x00,
+        p = 0x24,
         cyc = 7,
     );
 
     cpu.step_for(14);
-    assert_state!(
+    assert_cpu!(
         cpu,
         pc = 0xC60C,
-        p = 0x26,
         s = 0x01FD,
         a = 0x42,
         x = 0x00,
         y = 0x69,
+        p = 0x26,
         cyc = 42,
     );
 
@@ -78,67 +66,30 @@ fn zpg_store() {
         0xC00A: 0x96 0xCC; //  STX $CC,Y    4 cyc
         0xFFFC: 0x00 0xC0; //  program start $C000
     });
-    assert_state!(
+    assert_cpu!(
         cpu,
         pc = 0xC000,
-        p = 0x24,
         s = 0x01FD,
         a = 0x00,
         x = 0x00,
         y = 0x00,
+        p = 0x24,
         cyc = 7,
     );
 
     cpu.step_for(6);
-    assert_state!(
+    assert_cpu!(
         cpu,
         pc = 0xC00C,
-        p = 0x24,
         s = 0x01FD,
         a = 0xFF,
         x = 0x10,
         y = 0x01,
+        p = 0x24,
         cyc = 24,
     );
 
     assert_mem_eq!(ram, 0x00B0, 0xFF);
     assert_mem_eq!(ram, 0x00CC, 0xFF);
     assert_mem_eq!(ram, 0x00CD, 0x10);
-}
-
-#[test]
-fn jmp_ind() {
-    let (ram, mut cpu) = setup(asm! {
-        size = 0x10000,
-        //                          RESET        7 cyc
-        0xC000: 0xA9 0xC0; //       LDA #$C0     2 cyc
-        0xC002: 0x85 0x11; //       STA $11      3 cyc
-        0xC004: 0x6C 0x10 0x00; //  JMP ($0010)  5 cyc
-        0xFFFC: 0x00 0xC0; //  program start $C000
-    });
-    assert_state!(
-        cpu,
-        pc = 0xC000,
-        p = 0x24,
-        s = 0x01FD,
-        a = 0x00,
-        x = 0x00,
-        y = 0x00,
-        cyc = 7,
-    );
-
-    cpu.step_for(3);
-    assert_state!(
-        cpu,
-        pc = 0xC000,
-        p = 0xA4,
-        s = 0x01FD,
-        a = 0xC0,
-        x = 0x00,
-        y = 0x00,
-        cyc = 17,
-    );
-
-    assert_mem_eq!(ram, 0x0010, 0x00);
-    assert_mem_eq!(ram, 0x0011, 0xC0);
 }

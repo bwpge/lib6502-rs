@@ -34,6 +34,9 @@ macro_rules! assert_byte_eq {
 
 #[macro_export]
 macro_rules! asm {
+    ($($addr:literal : $($byte:literal)+ ;)+) => {{
+        asm!(size = 0x10000, $($addr : $($byte)+ ;)+)
+    }};
     (size = $size:literal, $($addr:literal : $($byte:literal)+ ;)+) => {{
         let mut __program = [0u8; $size];
         $(
@@ -52,10 +55,10 @@ macro_rules! asm {
 }
 
 #[macro_export]
-macro_rules! assert_state {
+macro_rules! assert_cpu {
     ($cpu:ident, $($tt:tt = $val:literal),* $(,)?) => {
         $(
-            assert_state!($cpu, $tt, $val);
+            assert_cpu!($cpu, $tt, $val);
         )*
     };
     ($cpu:ident, pc, $pc:literal) => {{
@@ -83,7 +86,8 @@ macro_rules! assert_state {
 
 #[macro_export]
 macro_rules! assert_mem_eq {
-    ($mem:ident, $addr:literal, $val:literal) => {{
-        assert_byte_eq!($mem.borrow().read($addr), $val);
+    ($shared:ident, $addr:literal, $val:literal) => {{
+        use ::lib6502::Bus;
+        assert_byte_eq!($shared.borrow().read($addr), $val);
     }};
 }
