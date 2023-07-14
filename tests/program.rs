@@ -6,9 +6,17 @@ use lib6502::{Bus, Cpu};
 
 use crate::common::Ram;
 
+fn setup(prog: [u8; 0x10000]) -> (Rc<RefCell<Ram>>, Cpu<Ram>) {
+    let ram = Rc::new(RefCell::new(Ram::new().load_at(&prog, 0)));
+    let mut cpu = Cpu::new(ram.clone());
+    cpu.step();
+
+    (ram, cpu)
+}
+
 #[test]
 fn load_and_store() {
-    let prog = asm! {
+    let (ram, mut cpu) = setup(asm! {
         size = 0x10000,
         //                          RESET       7 cyc
         0xC000: 0x4C 0xF5 0xC5; //  JMP $C5F5   3 cyc
@@ -26,14 +34,7 @@ fn load_and_store() {
         0xC609: 0xEA; //            NOP         2 cyc
         0xC60A: 0xA2 0x00; //       LDX #$00    2 cyc
         0xFFFC: 0x00 0xC0; //       program start $C000
-    };
-    let ram = Rc::new(RefCell::new(Ram::new().load_at(&prog, 0)));
-    let mut cpu = Cpu::new(ram.clone());
-
-    // execute reset
-    cpu.step();
-
-    // validate start state
+    });
     assert_state!(
         cpu,
         pc = 0xC000,
@@ -42,15 +43,10 @@ fn load_and_store() {
         a = 0x00,
         x = 0x00,
         y = 0x00,
+        cyc = 7,
     );
-    for i in 0..=0xBFFF {
-        assert_byte_eq!(ram.borrow().read(i), 0x00);
-    }
 
-    // execute program (14 instructions)
     cpu.step_for(14);
-
-    // validate final state
     assert_state!(
         cpu,
         pc = 0xC60C,
@@ -59,13 +55,53 @@ fn load_and_store() {
         a = 0x42,
         x = 0x00,
         y = 0x69,
+        cyc = 42,
     );
-    assert_eq!(cpu.cycles(), 42);
 
-    // validate memory writes
-    assert_byte_eq!(ram.borrow().read(0x0000), 0x01);
-    assert_byte_eq!(ram.borrow().read(0x0010), 0x01);
-    assert_byte_eq!(ram.borrow().read(0x0011), 0x01);
-    assert_byte_eq!(ram.borrow().read(0x0042), 0x42);
-    assert_byte_eq!(ram.borrow().read(0xF000), 0x69);
+    assert_mem_eq!(ram, 0x0000, 0x01);
+    assert_mem_eq!(ram, 0x0010, 0x01);
+    assert_mem_eq!(ram, 0x0011, 0x01);
+    assert_mem_eq!(ram, 0x0042, 0x42);
+    assert_mem_eq!(ram, 0xF000, 0x69);
+}
+
+#[test]
+fn zpg_store() {
+    let (ram, mut cpu) = setup(asm! {
+        size = 0x10000,
+        //                     RESET        7 cyc
+        0xC000: 0xA9 0xFF; //  LDA #$FF     2 cyc
+        0xC002: 0xA2 0x10; //  LDX #$10     2 cyc
+        0xC004: 0xA0 0x01; //  LDY #$01     2 cyc
+        0xC006: 0x95 0xA0; //  STA $A0,X    4 cyc
+        0xC008: 0x85 0xCC; //  STA $CC      3 cyc
+        0xC00A: 0x96 0xCC; //  STX $CC,Y    4 cyc
+        0xFFFC: 0x00 0xC0; //  program start $C000
+    });
+    assert_state!(
+        cpu,
+        pc = 0xC000,
+        p = 0x24,
+        s = 0x01FD,
+        a = 0x00,
+        x = 0x00,
+        y = 0x00,
+        cyc = 7,
+    );
+
+    cpu.step_for(6);
+    assert_state!(
+        cpu,
+        pc = 0xC00C,
+        p = 0x24,
+        s = 0x01FD,
+        a = 0xFF,
+        x = 0x10,
+        y = 0x01,
+        cyc = 24,
+    );
+
+    assert_mem_eq!(ram, 0x00B0, 0xFF);
+    assert_mem_eq!(ram, 0x00CC, 0xFF);
+    assert_mem_eq!(ram, 0x00CD, 0x10);
 }

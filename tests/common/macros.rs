@@ -4,9 +4,9 @@ macro_rules! assert_word_eq {
         if $lhs != $rhs {
             panic!(
                 "failed byte assertion:\n    \
-                        expr: `{}`\n  \
-                        expect: `0x{:04X}`\n     \
-                        got: `0x{:04X}`\n",
+                expr: `{}`\n  \
+                expect: `0x{:04X}`\n  \
+                actual: `0x{:04X}`\n",
                 stringify!($lhs),
                 $rhs,
                 $lhs,
@@ -22,8 +22,8 @@ macro_rules! assert_byte_eq {
             panic!(
                 "failed byte assertion:\n    \
                 expr: `{}`\n  \
-                expect: `0x{:02X}`\n     \
-                got: `0x{:02X}`\n",
+                expect: `0x{:02X}`\n  \
+                actual: `0x{:02X}`\n",
                 stringify!($lhs),
                 $rhs,
                 $lhs,
@@ -75,5 +75,15 @@ macro_rules! assert_state {
     }};
     ($cpu:ident, y, $y:literal) => {{
         assert_byte_eq!($cpu.y(), $y);
+    }};
+    ($cpu:ident, cyc, $cycles:literal) => {{
+        assert_eq!($cpu.cycles(), $cycles);
+    }};
+}
+
+#[macro_export]
+macro_rules! assert_mem_eq {
+    ($mem:ident, $addr:literal, $val:literal) => {{
+        assert_byte_eq!($mem.borrow().read($addr), $val);
     }};
 }
