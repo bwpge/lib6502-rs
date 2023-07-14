@@ -407,12 +407,12 @@ impl<B: Bus> Cpu<B> {
 
                 // add index register to low address byte
                 let hi = self.addr & 0xFF00;
-                if self.ir.mode == AddressingMode::AbsoluteX {
-                    inc!(self.addr, self.x as u16);
+                let lo = if self.ir.mode == AddressingMode::AbsoluteX {
+                    (self.addr & 0x00FF) + self.x as u16
                 } else {
-                    inc!(self.addr, self.y as u16);
-                }
-                self.addr_carry = hi != self.addr & 0xFF00;
+                    (self.addr & 0x00FF) + self.y as u16
+                };
+                self.addr_carry = (lo & 0xFF00) != 0;
 
                 // check if additional cycle required
                 if self.addr_carry {
@@ -420,6 +420,8 @@ impl<B: Bus> Cpu<B> {
                 } else {
                     self.state = State::T0;
                 }
+
+                self.addr = hi | (lo & 0x00FF);
             }
             // fix high byte of address
             State::T4 => {
@@ -474,14 +476,97 @@ impl<B: Bus> Cpu<B> {
     ///
     /// Returns `true` when resolution is complete, `false` otherwise.
     fn izx(&mut self) -> bool {
-        todo!()
+        match self.state {
+            // fetch opcode, increment PC
+            State::T1 => {
+                inc!(self.pc);
+                self.state = State::T2;
+            }
+            // fetch pointer address, increment PC
+            State::T2 => {
+                self.data = self.read_u8(self.pc);
+                inc!(self.pc);
+                self.state = State::T3;
+            }
+            // add X to get effective address
+            State::T3 => {
+                self.data = self.data.wrapping_add(self.x);
+                self.state = State::T4;
+            }
+            // fetch effective address low
+            State::T4 => {
+                let ptr = self.data as u16;
+                self.addr = self.read_u8(ptr) as u16;
+                self.state = State::T5;
+            }
+            // fetch effective address high
+            State::T5 => {
+                let ptr = self.data.wrapping_add(1) as u16;
+                let hi = self.read_u8(ptr) as u16;
+                self.addr |= hi << 8;
+                self.state = State::T0;
+            }
+            State::T0 => return true,
+            _ => unreachable!(),
+        }
+
+        false
     }
 
     /// Resolves the operand for `(indirect),Y` addressing mode.
     ///
     /// Returns `true` when resolution is complete, `false` otherwise.
     fn izy(&mut self) -> bool {
-        todo!()
+        match self.state {
+            // fetch opcode, increment PC
+            State::T1 => {
+                inc!(self.pc);
+                self.state = State::T2;
+            }
+            // fetch pointer address, increment PC
+            State::T2 => {
+                self.data = self.read_u8(self.pc);
+                inc!(self.pc);
+                self.state = State::T3;
+            }
+            // fetch effective address low
+            State::T3 => {
+                let ptr = self.data as u16;
+                self.addr = self.read_u8(ptr) as u16;
+
+                if ptr == 0xFF {
+                    self.addr_carry = true;
+                }
+
+                self.state = State::T4;
+            }
+            // fetch effective address high
+            State::T4 => {
+                let ptr = self.data.wrapping_add(1) as u16;
+                let hi = self.read_u8(ptr) as u16;
+                self.addr |= hi << 8;
+
+                if self.addr_carry {
+                    self.state = State::T5;
+                    return false;
+                }
+
+                self.state = State::T0;
+            }
+            // fix high byte of effective address
+            State::T5 => {
+                let ptr = (self.data as u16) + 1;
+                let hi = self.read_u8(ptr) as u16;
+                self.addr = (hi << 8) | (self.addr & 0x00FF);
+
+                self.addr_carry = false;
+                self.state = State::T0;
+            }
+            State::T0 => return true,
+            _ => unreachable!(),
+        }
+
+        false
     }
 
     /// Resolves the operand for `relative` addressing mode.
