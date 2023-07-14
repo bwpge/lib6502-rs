@@ -543,9 +543,6 @@ impl From<Instruction> for u8 {
 }
 
 #[cfg(test)]
-use pretty_assertions::assert_eq as pretty_assert_eq;
-
-#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -593,7 +590,7 @@ mod tests {
 
     macro_rules! test_op {
         ($opcode:ident, -, -) => {{
-            pretty_assert_eq!(
+            assert_eq!(
                 Instruction::illegal($opcode),
                 Instruction::from($opcode),
                 "with opcode `{:#04X}`",
@@ -601,7 +598,7 @@ mod tests {
             );
         }};
         ($opcode:ident, $kind:tt, $mode:tt) => {
-            pretty_assert_eq!(
+            assert_eq!(
                 Instruction::new($kind, expand_mode!($mode), $opcode),
                 Instruction::from($opcode),
                 "with opcode `{:#04X}`",
@@ -619,7 +616,7 @@ mod tests {
                 __op = __op.wrapping_add(1);
             )+
             // ensure we have 256 input instructions
-            pretty_assert_eq!(__op, 0u8);
+            assert_eq!(__op, 0u8);
         }};
     }
 
