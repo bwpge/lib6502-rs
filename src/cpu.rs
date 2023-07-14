@@ -371,11 +371,12 @@ impl<B: Bus> Cpu<B> {
             Accumulator | Implied => self.imp(),
             Absolute | AbsoluteX | AbsoluteY => self.abs(),
             Immediate => self.imm(),
-            Indirect => self.ind(),
             IndirectX => self.izx(),
             IndirectY => self.izy(),
             Relative => self.rel(),
             ZeroPage | ZeroPageX | ZeroPageY => self.zpg(),
+            // JMP handles its own resolution
+            Indirect => unreachable!(),
         }
     }
 
@@ -468,15 +469,6 @@ impl<B: Bus> Cpu<B> {
         }
 
         false
-    }
-
-    /// Resolves the operand for `indirect` addressing mode.
-    ///
-    /// Note that `JMP` is the only instruction that utilizes this mode.
-    ///
-    /// Returns `true` when resolution is complete, `false` otherwise.
-    fn ind(&mut self) -> bool {
-        todo!()
     }
 
     /// Resolves the operand for `(indirect,X)` addressing mode.
@@ -661,6 +653,8 @@ impl<B: Bus> Cpu<B> {
 
     /// Executes the BRK instruction.
     fn brk(&mut self) {
+        debug_assert!(self.ir.mode == AddressingMode::Implied);
+
         match self.state {
             State::T1 => {
                 inc!(self.pc);
@@ -805,22 +799,66 @@ impl<B: Bus> Cpu<B> {
 
     /// Executes the JMP instruction.
     fn jmp(&mut self) {
-        match self.state {
-            State::T1 => {
-                inc!(self.pc);
-                self.state = State::T2;
+        debug_assert!(
+            self.ir.mode == AddressingMode::Absolute || self.ir.mode == AddressingMode::Indirect
+        );
+
+        if self.ir.mode == AddressingMode::Absolute {
+            match self.state {
+                State::T1 => {
+                    inc!(self.pc);
+                    self.state = State::T2;
+                }
+                State::T2 => {
+                    self.addr = self.read_u8(self.pc) as u16;
+                    inc!(self.pc);
+                    self.state = State::T0;
+                }
+                State::T0 => {
+                    self.addr |= (self.read_u8(self.pc) as u16) << 8;
+                    self.pc = self.addr;
+                    self.state = State::T1;
+                }
+                _ => unreachable!(),
             }
-            State::T2 => {
-                self.addr = self.read_u8(self.pc) as u16;
-                inc!(self.pc);
-                self.state = State::T0;
+        } else {
+            match self.state {
+                // fetch opcode, increment PC
+                State::T1 => {
+                    inc!(self.pc);
+                    self.state = State::T2;
+                }
+                // fetch pointer address low, increment PC
+                State::T2 => {
+                    self.addr = self.read_u8(self.pc) as u16;
+                    inc!(self.pc);
+
+                    self.state = State::T3;
+                }
+                // fetch pointer address high, increment PC
+                State::T3 => {
+                    self.addr |= (self.read_u8(self.pc) as u16) << 8;
+                    inc!(self.pc);
+                    self.state = State::T4;
+                }
+                // fetch low address to latch
+                State::T4 => {
+                    self.data = self.read_u8(self.addr);
+                    self.state = State::T0;
+                }
+                // fetch PCH, copy latch to PCL
+                State::T0 => {
+                    // emulate hardware bug on page cross
+                    let addr = (self.addr & 0xFF00) | (self.addr.wrapping_add(1) & 0x00FF);
+                    let hi = (self.read_u8(addr) as u16) << 8;
+                    let lo = self.data as u16;
+
+                    self.addr = hi | lo;
+                    self.pc = self.addr;
+                    self.state = State::T1;
+                }
+                _ => unreachable!(),
             }
-            State::T0 => {
-                self.addr |= (self.read_u8(self.pc) as u16) << 8;
-                self.pc = self.addr;
-                self.state = State::T1;
-            }
-            _ => unreachable!(),
         }
     }
 
