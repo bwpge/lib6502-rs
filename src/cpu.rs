@@ -375,8 +375,7 @@ impl<B: Bus> Cpu<B> {
             IndirectY => self.izy(),
             Relative => self.rel(),
             ZeroPage | ZeroPageX | ZeroPageY => self.zpg(),
-            // JMP handles its own resolution
-            Indirect => unreachable!(),
+            _ => unreachable!(),
         }
     }
 
@@ -803,62 +802,55 @@ impl<B: Bus> Cpu<B> {
             self.ir.mode == AddressingMode::Absolute || self.ir.mode == AddressingMode::Indirect
         );
 
-        if self.ir.mode == AddressingMode::Absolute {
-            match self.state {
-                State::T1 => {
-                    inc!(self.pc);
-                    self.state = State::T2;
-                }
-                State::T2 => {
-                    self.addr = self.read_u8(self.pc) as u16;
-                    inc!(self.pc);
-                    self.state = State::T0;
-                }
-                State::T0 => {
-                    self.addr |= (self.read_u8(self.pc) as u16) << 8;
-                    self.pc = self.addr;
-                    self.state = State::T1;
-                }
-                _ => unreachable!(),
+        match (self.ir.mode, self.state) {
+            // fetch opcode, increment PC
+            (AddressingMode::Absolute | AddressingMode::Indirect, State::T1) => {
+                inc!(self.pc);
+                self.state = State::T2;
             }
-        } else {
-            match self.state {
-                // fetch opcode, increment PC
-                State::T1 => {
-                    inc!(self.pc);
-                    self.state = State::T2;
-                }
-                // fetch pointer address low, increment PC
-                State::T2 => {
-                    self.addr = self.read_u8(self.pc) as u16;
-                    inc!(self.pc);
 
-                    self.state = State::T3;
-                }
-                // fetch pointer address high, increment PC
-                State::T3 => {
-                    self.addr |= (self.read_u8(self.pc) as u16) << 8;
-                    inc!(self.pc);
-                    self.state = State::T4;
-                }
-                // fetch low address to latch
-                State::T4 => {
-                    self.data = self.read_u8(self.addr);
-                    self.state = State::T0;
-                }
-                // fetch PCH, copy latch to PCL
-                State::T0 => {
-                    // emulate hardware bug on page cross
-                    let addr = (self.addr & 0xFF00) | (self.addr.wrapping_add(1) & 0x00FF);
-                    let hi = (self.read_u8(addr) as u16) << 8;
-                    let lo = self.data as u16;
-
-                    self.addr = hi | lo;
-                    self.pc = self.addr;
-                    self.state = State::T1;
-                }
-                _ => unreachable!(),
+            // fetch low address byte, increment PC
+            (AddressingMode::Absolute, State::T2) => {
+                self.addr = self.read_u8(self.pc) as u16;
+                inc!(self.pc);
+                self.state = State::T0;
             }
+            // copy low address byte to PCL, fetch high address byte to PCH
+            (AddressingMode::Absolute, State::T0) => {
+                self.addr |= (self.read_u8(self.pc) as u16) << 8;
+                self.pc = self.addr;
+                self.state = State::T1;
+            }
+
+            // fetch pointer address low, increment PC
+            (AddressingMode::Indirect, State::T2) => {
+                self.addr = self.read_u8(self.pc) as u16;
+                inc!(self.pc);
+                self.state = State::T3;
+            }
+            // fetch pointer address high, increment PC
+            (AddressingMode::Indirect, State::T3) => {
+                self.addr |= (self.read_u8(self.pc) as u16) << 8;
+                inc!(self.pc);
+                self.state = State::T4;
+            }
+            // fetch low address to latch
+            (AddressingMode::Indirect, State::T4) => {
+                self.data = self.read_u8(self.addr);
+                self.state = State::T0;
+            }
+            // fetch PCH, copy latch to PCL
+            (AddressingMode::Indirect, State::T0) => {
+                // emulate hardware bug on page cross
+                let addr = (self.addr & 0xFF00) | (self.addr.wrapping_add(1) & 0x00FF);
+                let hi = (self.read_u8(addr) as u16) << 8;
+                let lo = self.data as u16;
+
+                self.addr = hi | lo;
+                self.pc = self.addr;
+                self.state = State::T1;
+            }
+            _ => unreachable!(),
         }
     }
 
