@@ -95,6 +95,39 @@ enum State {
     T6,
 }
 
+impl State {
+    /// Advances to the next [`State`].
+    ///
+    /// Does not work for `T1` -> `T2_0`.
+    fn next(&mut self) {
+        *self = match *self {
+            Self::T0 => Self::T1,
+            Self::T0_2 => Self::T1,
+            Self::T1 => Self::T2,
+            Self::T2 => Self::T3,
+            Self::T3 => Self::T4,
+            Self::T4 => Self::T5,
+            Self::T5 => Self::T6,
+            Self::T6 => Self::T0,
+        };
+    }
+
+    /// Sets the state to `T0`.
+    fn t0(&mut self) {
+        *self = Self::T0;
+    }
+
+    /// Sets the state to `T0_2`.
+    fn t0_2(&mut self) {
+        *self = Self::T0_2;
+    }
+
+    /// Sets the state to `T1`.
+    fn t1(&mut self) {
+        *self = Self::T1;
+    }
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct Interrupt {
     /// Where the interrupt was sourced from
@@ -387,13 +420,13 @@ impl<B: Bus> Cpu<B> {
             // fetch opcode, increment PC
             State::T1 => {
                 inc!(self.pc);
-                self.state = State::T2;
+                self.state.next();
             }
             // fetch low byte of address, increment PC
             State::T2 => {
                 self.addr = self.read_u8(self.pc) as u16;
                 inc!(self.pc);
-                self.state = State::T3;
+                self.state.next();
             }
             // fetch high byte of address, increment PC
             State::T3 => {
@@ -401,7 +434,7 @@ impl<B: Bus> Cpu<B> {
                 inc!(self.pc);
 
                 if self.ir.mode == AddressingMode::Absolute {
-                    self.state = State::T0;
+                    self.state.t0();
                     return false;
                 }
 
@@ -416,9 +449,9 @@ impl<B: Bus> Cpu<B> {
 
                 // check if additional cycle required
                 if self.addr_carry {
-                    self.state = State::T4;
+                    self.state.next();
                 } else {
-                    self.state = State::T0;
+                    self.state.t0();
                 }
 
                 self.addr = hi | (lo & 0x00FF);
@@ -427,7 +460,7 @@ impl<B: Bus> Cpu<B> {
             State::T4 => {
                 inc!(self.addr, 0x100);
                 self.addr_carry = false;
-                self.state = State::T0;
+                self.state.t0();
             }
             State::T0 => return true,
             _ => unreachable!(),
@@ -443,7 +476,7 @@ impl<B: Bus> Cpu<B> {
         match self.state {
             State::T1 => {
                 inc!(self.pc);
-                self.state = State::T0_2;
+                self.state.t0_2();
             }
             State::T0_2 => {
                 self.data = self.read_u8(self.pc);
@@ -463,7 +496,7 @@ impl<B: Bus> Cpu<B> {
         match self.state {
             State::T1 => {
                 inc!(self.pc);
-                self.state = State::T0_2;
+                self.state.t0_2();
             }
             State::T0_2 => return true,
             _ => unreachable!(),
@@ -480,31 +513,31 @@ impl<B: Bus> Cpu<B> {
             // fetch opcode, increment PC
             State::T1 => {
                 inc!(self.pc);
-                self.state = State::T2;
+                self.state.next();
             }
             // fetch pointer address, increment PC
             State::T2 => {
                 self.data = self.read_u8(self.pc);
                 inc!(self.pc);
-                self.state = State::T3;
+                self.state.next();
             }
             // add X to get effective address
             State::T3 => {
                 self.data = self.data.wrapping_add(self.x);
-                self.state = State::T4;
+                self.state.next();
             }
             // fetch effective address low
             State::T4 => {
                 let ptr = self.data as u16;
                 self.addr = self.read_u8(ptr) as u16;
-                self.state = State::T5;
+                self.state.next();
             }
             // fetch effective address high
             State::T5 => {
                 let ptr = self.data.wrapping_add(1) as u16;
                 let hi = self.read_u8(ptr) as u16;
                 self.addr |= hi << 8;
-                self.state = State::T0;
+                self.state.t0();
             }
             State::T0 => return true,
             _ => unreachable!(),
@@ -521,13 +554,13 @@ impl<B: Bus> Cpu<B> {
             // fetch opcode, increment PC
             State::T1 => {
                 inc!(self.pc);
-                self.state = State::T2;
+                self.state.next();
             }
             // fetch pointer address, increment PC
             State::T2 => {
                 self.data = self.read_u8(self.pc);
                 inc!(self.pc);
-                self.state = State::T3;
+                self.state.next();
             }
             // fetch effective address low
             State::T3 => {
@@ -538,7 +571,7 @@ impl<B: Bus> Cpu<B> {
                     self.addr_carry = true;
                 }
 
-                self.state = State::T4;
+                self.state.next();
             }
             // fetch effective address high
             State::T4 => {
@@ -547,11 +580,11 @@ impl<B: Bus> Cpu<B> {
                 self.addr |= hi << 8;
 
                 if self.addr_carry {
-                    self.state = State::T5;
+                    self.state.next();
                     return false;
                 }
 
-                self.state = State::T0;
+                self.state.t0();
             }
             // fix high byte of effective address
             State::T5 => {
@@ -560,7 +593,7 @@ impl<B: Bus> Cpu<B> {
                 self.addr = (hi << 8) | (self.addr & 0x00FF);
 
                 self.addr_carry = false;
-                self.state = State::T0;
+                self.state.t0();
             }
             State::T0 => return true,
             _ => unreachable!(),
@@ -584,7 +617,7 @@ impl<B: Bus> Cpu<B> {
             // fetch opcode, increment PC
             State::T1 => {
                 inc!(self.pc);
-                self.state = State::T2;
+                self.state.next();
             }
             // fetch address, increment PC
             State::T2 => {
@@ -592,11 +625,11 @@ impl<B: Bus> Cpu<B> {
                 inc!(self.pc);
 
                 if self.ir.mode == AddressingMode::ZeroPage {
-                    self.state = State::T0;
+                    self.state.t0();
                     return false;
                 }
 
-                self.state = State::T3;
+                self.state.next();
             }
             // add index register to effective address
             State::T3 => {
@@ -606,7 +639,7 @@ impl<B: Bus> Cpu<B> {
                     inc!(self.addr, self.y as u16);
                 };
                 self.addr &= 0x00FF;
-                self.state = State::T0;
+                self.state.t0();
             }
             State::T0 => return true,
             _ => unreachable!(),
@@ -692,7 +725,7 @@ impl<B: Bus> Cpu<B> {
 
         self.a &= self.data;
         self.set_flag_zn(self.a);
-        self.state = State::T1;
+        self.state.t1();
     }
 
     /// Executes the ASL instruction.
@@ -742,11 +775,11 @@ impl<B: Bus> Cpu<B> {
         match self.state {
             State::T1 => {
                 inc!(self.pc);
-                self.state = State::T2;
+                self.state.next();
             }
             State::T2 => {
                 inc!(self.pc);
-                self.state = State::T3;
+                self.state.next();
             }
             State::T3 => {
                 if self.interrupt.src == Source::RES {
@@ -755,7 +788,7 @@ impl<B: Bus> Cpu<B> {
                     self.push_u8(((self.pc & 0xFF00) >> 8) as u8);
                 }
 
-                self.state = State::T4;
+                self.state.next();
             }
             State::T4 => {
                 if self.interrupt.src == Source::RES {
@@ -764,7 +797,7 @@ impl<B: Bus> Cpu<B> {
                     self.push_u8((self.pc & 0x00FF) as u8);
                 }
 
-                self.state = State::T5;
+                self.state.next();
             }
             State::T5 => {
                 if self.interrupt.src == Source::RES {
@@ -774,7 +807,7 @@ impl<B: Bus> Cpu<B> {
                 }
 
                 self.set_flag(StatusFlag::I, true);
-                self.state = State::T6;
+                self.state.next();
             }
             State::T6 => {
                 self.pc = match self.interrupt.src {
@@ -783,7 +816,7 @@ impl<B: Bus> Cpu<B> {
                     Source::RES => self.read_u8(RES_VECTOR) as u16,
                     _ => unreachable!(),
                 };
-                self.state = State::T0;
+                self.state.t0();
             }
             State::T0 => {
                 let hi = match self.interrupt.src {
@@ -793,7 +826,7 @@ impl<B: Bus> Cpu<B> {
                     _ => unreachable!(),
                 };
                 self.pc |= hi << 8;
-                self.state = State::T1;
+                self.state.t1();
                 // TODO: fix when interrupt is cleared
                 self.interrupt.clear();
             }
@@ -818,7 +851,7 @@ impl<B: Bus> Cpu<B> {
         }
 
         self.set_flag(StatusFlag::C, false);
-        self.state = State::T1;
+        self.state.t1();
     }
 
     /// Executes the CLD instruction.
@@ -828,7 +861,7 @@ impl<B: Bus> Cpu<B> {
         }
 
         self.set_flag(StatusFlag::D, false);
-        self.state = State::T1;
+        self.state.t1();
     }
 
     /// Executes the CLI instruction.
@@ -838,7 +871,7 @@ impl<B: Bus> Cpu<B> {
         }
 
         self.set_flag(StatusFlag::I, false);
-        self.state = State::T1;
+        self.state.t1();
     }
 
     /// Executes the CLV instruction.
@@ -848,7 +881,7 @@ impl<B: Bus> Cpu<B> {
         }
 
         self.set_flag(StatusFlag::V, false);
-        self.state = State::T1;
+        self.state.t1();
     }
 
     /// Executes the CMP instruction.
@@ -911,38 +944,38 @@ impl<B: Bus> Cpu<B> {
             // fetch opcode, increment PC
             (AddressingMode::Absolute | AddressingMode::Indirect, State::T1) => {
                 inc!(self.pc);
-                self.state = State::T2;
+                self.state.next();
             }
 
             // fetch low address byte, increment PC
             (AddressingMode::Absolute, State::T2) => {
                 self.addr = self.read_u8(self.pc) as u16;
                 inc!(self.pc);
-                self.state = State::T0;
+                self.state.t0();
             }
             // copy low address byte to PCL, fetch high address byte to PCH
             (AddressingMode::Absolute, State::T0) => {
                 self.addr |= (self.read_u8(self.pc) as u16) << 8;
                 self.pc = self.addr;
-                self.state = State::T1;
+                self.state.t1();
             }
 
             // fetch pointer address low, increment PC
             (AddressingMode::Indirect, State::T2) => {
                 self.addr = self.read_u8(self.pc) as u16;
                 inc!(self.pc);
-                self.state = State::T3;
+                self.state.next();
             }
             // fetch pointer address high, increment PC
             (AddressingMode::Indirect, State::T3) => {
                 self.addr |= (self.read_u8(self.pc) as u16) << 8;
                 inc!(self.pc);
-                self.state = State::T4;
+                self.state.next();
             }
             // fetch low address to latch
             (AddressingMode::Indirect, State::T4) => {
                 self.data = self.read_u8(self.addr);
-                self.state = State::T0;
+                self.state.t0();
             }
             // fetch PCH, copy latch to PCL
             (AddressingMode::Indirect, State::T0) => {
@@ -953,7 +986,7 @@ impl<B: Bus> Cpu<B> {
 
                 self.addr = hi | lo;
                 self.pc = self.addr;
-                self.state = State::T1;
+                self.state.t1();
             }
             _ => unreachable!(),
         }
@@ -977,7 +1010,7 @@ impl<B: Bus> Cpu<B> {
         }
 
         self.set_flag_zn(self.a);
-        self.state = State::T1;
+        self.state.t1();
     }
 
     /// Executes the LDX instruction.
@@ -993,7 +1026,7 @@ impl<B: Bus> Cpu<B> {
         }
 
         self.set_flag_zn(self.x);
-        self.state = State::T1;
+        self.state.t1();
     }
 
     /// Executes the LDY instruction.
@@ -1009,7 +1042,7 @@ impl<B: Bus> Cpu<B> {
         }
 
         self.set_flag_zn(self.y);
-        self.state = State::T1;
+        self.state.t1();
     }
 
     /// Executes the LSR instruction.
@@ -1023,9 +1056,9 @@ impl<B: Bus> Cpu<B> {
         match self.state {
             State::T1 => {
                 inc!(self.pc);
-                self.state = State::T0_2
+                self.state.t0_2();
             }
-            State::T0_2 => self.state = State::T1,
+            State::T0_2 => self.state.t1(),
             _ => unreachable!(),
         }
     }
@@ -1087,7 +1120,7 @@ impl<B: Bus> Cpu<B> {
         }
 
         self.set_flag(StatusFlag::C, true);
-        self.state = State::T1;
+        self.state.t1();
     }
 
     /// Executes the SED instruction.
@@ -1097,7 +1130,7 @@ impl<B: Bus> Cpu<B> {
         }
 
         self.set_flag(StatusFlag::D, true);
-        self.state = State::T1;
+        self.state.t1();
     }
 
     /// Executes the SEI instruction.
@@ -1107,7 +1140,7 @@ impl<B: Bus> Cpu<B> {
         }
 
         self.set_flag(StatusFlag::I, true);
-        self.state = State::T1;
+        self.state.t1();
     }
 
     /// Executes the STA instruction.
@@ -1117,7 +1150,7 @@ impl<B: Bus> Cpu<B> {
         }
 
         self.write_u8(self.addr, self.a);
-        self.state = State::T1;
+        self.state.t1();
     }
 
     /// Executes the STX instruction.
@@ -1127,7 +1160,7 @@ impl<B: Bus> Cpu<B> {
         }
 
         self.write_u8(self.addr, self.x);
-        self.state = State::T1;
+        self.state.t1();
     }
 
     /// Executes the STY instruction.
@@ -1137,7 +1170,7 @@ impl<B: Bus> Cpu<B> {
         }
 
         self.write_u8(self.addr, self.y);
-        self.state = State::T1;
+        self.state.t1();
     }
 
     /// Executes the TAX instruction.
@@ -1148,7 +1181,7 @@ impl<B: Bus> Cpu<B> {
 
         self.x = self.a;
         self.set_flag_zn(self.x);
-        self.state = State::T1;
+        self.state.t1();
     }
 
     /// Executes the TAY instruction.
@@ -1159,7 +1192,7 @@ impl<B: Bus> Cpu<B> {
 
         self.y = self.a;
         self.set_flag_zn(self.y);
-        self.state = State::T1;
+        self.state.t1();
     }
 
     /// Executes the TSX instruction.
@@ -1170,7 +1203,7 @@ impl<B: Bus> Cpu<B> {
 
         self.x = self.s;
         self.set_flag_zn(self.x);
-        self.state = State::T1;
+        self.state.t1();
     }
 
     /// Executes the TXA instruction.
@@ -1181,7 +1214,7 @@ impl<B: Bus> Cpu<B> {
 
         self.a = self.x;
         self.set_flag_zn(self.a);
-        self.state = State::T1;
+        self.state.t1();
     }
 
     /// Executes the TXS instruction.
@@ -1191,7 +1224,7 @@ impl<B: Bus> Cpu<B> {
         }
 
         self.s = self.x;
-        self.state = State::T1;
+        self.state.t1();
     }
 
     /// Executes the TYA instruction.
@@ -1202,7 +1235,7 @@ impl<B: Bus> Cpu<B> {
 
         self.a = self.y;
         self.set_flag_zn(self.a);
-        self.state = State::T1;
+        self.state.t1();
     }
 
     fn illegal(&self) {
