@@ -65,6 +65,35 @@ mod rmw {
     }
 
     #[test]
+    fn dec_zpg() {
+        let (ram, mut cpu) = setup(asm! {
+            0x0000: 0xC6 0x11; //  DEC $11  5 cyc
+        });
+        ram.borrow_mut().write(0x0011, 0xCC);
+        assert_mem_eq!(ram, 0x0011, 0xCC);
+        assert_cpu!(cpu, pc = 0x0000, p = 0x24, cyc = 7);
+
+        cpu.step();
+        assert_mem_eq!(ram, 0x0011, 0xCB);
+        assert_cpu!(cpu, pc = 0x0002, p = 0xA4, cyc = 12);
+    }
+
+    #[test]
+    fn dec_zpx_wrap() {
+        let (ram, mut cpu) = setup(asm! {
+            0x0000: 0xA2 0xF2; //  LDX #$02   2 cyc
+            0x0002: 0xD6 0xFF; //  DEC $FF,X  6 cyc
+        });
+        ram.borrow_mut().write(0x00F1, 0xCC);
+        assert_mem_eq!(ram, 0x00F1, 0xCC);
+        assert_cpu!(cpu, pc = 0x0000, p = 0x24, cyc = 7);
+
+        cpu.step_for(2);
+        assert_mem_eq!(ram, 0x00F1, 0xCB);
+        assert_cpu!(cpu, pc = 0x0004, p = 0xA4, cyc = 15);
+    }
+
+    #[test]
     fn dec_abx_page_cross() {
         let (ram, mut cpu) = setup(asm! {
             0x0000: 0xA2 0x02; //       LDX #$02     2 cyc
