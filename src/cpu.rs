@@ -425,7 +425,8 @@ impl<B: Bus> Cpu<B> {
 
         match self.ir.mode {
             Accumulator | Implied => self.imp(),
-            Absolute | AbsoluteX | AbsoluteY => self.abs(),
+            Absolute => self.abs(),
+            AbsoluteX | AbsoluteY => self.abs_xy(),
             Immediate => self.imm(),
             IndirectX => self.izx(),
             IndirectY => self.izy(),
@@ -439,6 +440,11 @@ impl<B: Bus> Cpu<B> {
     ///
     /// Returns `true` when resolution is complete, `false` otherwise.
     fn abs(&mut self) -> bool {
+        debug_assert!(matches!(
+            self.ir.mode,
+            AddressingMode::Absolute | AddressingMode::AbsoluteX | AddressingMode::AbsoluteY
+        ));
+
         match self.state {
             // fetch opcode, increment PC
             State::T1 => {
@@ -454,16 +460,54 @@ impl<B: Bus> Cpu<B> {
             // fetch high byte of address, increment PC
             State::T3 => {
                 self.addr |= (self.read_u8(self.pc) as u16) << 8;
+                self.data = self.read_u8(self.addr);
                 inc!(self.pc);
 
-                if self.ir.mode == AddressingMode::Absolute {
-                    if self.ir.is_rmw() {
-                        self.state.next();
-                    } else {
-                        self.state.t0();
-                    }
-                    return false;
+                if self.ir.is_rmw() {
+                    self.state.next();
+                } else {
+                    self.state.t0();
                 }
+            }
+            // fix high byte of address, handle T4 of RMW
+            State::T4 => {
+                if self.addr_carry {
+                    inc!(self.addr, 0x100);
+                    self.addr_carry = false;
+                    self.data = self.read_u8(self.addr);
+
+                    if !self.ir.is_rmw() {
+                        self.state.t0();
+                        return false;
+                    }
+                }
+
+                // RMW abs can read in T4
+                self.data = self.read_u8(self.addr);
+                self.state.next();
+                self.phase.next();
+            }
+            // RMW T5, modify data
+            State::T5 => {
+                debug_assert!(self.phase == Phase::Modify);
+                return true;
+            }
+            State::T0 => return true,
+            _ => unreachable!(),
+        }
+
+        false
+    }
+
+    fn abs_xy(&mut self) -> bool {
+        debug_assert!(
+            self.ir.mode == AddressingMode::AbsoluteX || self.ir.mode == AddressingMode::AbsoluteY
+        );
+
+        match self.state {
+            State::T3 => {
+                self.addr |= (self.read_u8(self.pc) as u16) << 8;
+                inc!(self.pc);
 
                 // add index register to low address byte
                 let hi = self.addr & 0xFF00;
@@ -475,7 +519,7 @@ impl<B: Bus> Cpu<B> {
                 self.addr_carry = (lo & 0xFF00) != 0;
                 self.addr = hi | (lo & 0x00FF);
 
-                // check if additional cycle required for X/Y offset
+                // check if additional cycle required for offset carry
                 // (RMW always requires an additional cycle)
                 if self.addr_carry || self.ir.is_rmw() {
                     self.state.next();
@@ -483,11 +527,12 @@ impl<B: Bus> Cpu<B> {
                     self.state.t0();
                 }
             }
-            // fix high byte of address, or handle T4 of RMW
             State::T4 => {
+                // R/W instructions can finish here with carry
                 if self.addr_carry {
                     inc!(self.addr, 0x100);
                     self.addr_carry = false;
+                    self.data = self.read_u8(self.addr);
 
                     if !self.ir.is_rmw() {
                         self.state.t0();
@@ -495,30 +540,22 @@ impl<B: Bus> Cpu<B> {
                     }
                 }
 
-                // RMW absolute mode can read in T4, abs,X/Y requires T5 to read
-                if self.ir.mode == AddressingMode::Absolute {
-                    self.data = self.read_u8(self.addr);
-                    self.phase.next();
-                }
+                // RMW instructions require T5 to read
                 self.state.next();
             }
-            // RMW T5, read or modify data
-            State::T5 => match self.phase {
-                Phase::Read => {
-                    self.data = self.read_u8(self.addr);
-                    self.phase.next();
-                    self.state.next();
-                }
-                Phase::Modify => return true,
-                _ => unreachable!(),
-            },
-            // RMW T6, modify or write data
-            State::T6 => match self.phase {
-                Phase::Modify | Phase::Write => return true,
-                _ => unreachable!(),
-            },
-            State::T0 => return true,
-            _ => unreachable!(),
+            // RMW T5, read data
+            State::T5 => {
+                debug_assert!(self.phase == Phase::Read);
+                self.data = self.read_u8(self.addr);
+                self.phase.next();
+                self.state.next();
+            }
+            // RMW T6, modify data
+            State::T6 => {
+                debug_assert!(self.phase == Phase::Modify);
+                return true;
+            }
+            _ => return self.abs(),
         }
 
         false
@@ -548,12 +585,23 @@ impl<B: Bus> Cpu<B> {
     ///
     /// Returns `true` when resolution is complete, `false` otherwise.
     fn imp(&mut self) -> bool {
+        debug_assert!(
+            self.ir.mode == AddressingMode::Accumulator || self.ir.mode == AddressingMode::Implied
+        );
+
         match self.state {
             State::T1 => {
                 inc!(self.pc);
                 self.state.t0_2();
             }
-            State::T0_2 => return true,
+            State::T0_2 => {
+                if self.ir.mode == AddressingMode::Accumulator {
+                    self.data = self.a;
+                } else {
+                    self.data = self.read_u8(self.pc);
+                }
+                return true;
+            }
             _ => unreachable!(),
         }
 
@@ -591,7 +639,10 @@ impl<B: Bus> Cpu<B> {
             State::T5 => {
                 let ptr = self.data.wrapping_add(1) as u16;
                 let hi = self.read_u8(ptr) as u16;
+
                 self.addr |= hi << 8;
+                self.data = self.read_u8(self.addr);
+
                 self.state.t0();
             }
             State::T0 => return true,
@@ -645,7 +696,9 @@ impl<B: Bus> Cpu<B> {
             State::T5 => {
                 let ptr = (self.data as u16) + 1;
                 let hi = self.read_u8(ptr) as u16;
+
                 self.addr = (hi << 8) | (self.addr & 0x00FF);
+                self.data = self.read_u8(self.addr);
 
                 self.addr_carry = false;
                 self.state.t0();
@@ -668,6 +721,11 @@ impl<B: Bus> Cpu<B> {
     ///
     /// Returns `true` when resolution is complete, `false` otherwise.
     fn zpg(&mut self) -> bool {
+        debug_assert!(matches!(
+            self.ir.mode,
+            AddressingMode::ZeroPage | AddressingMode::ZeroPageX | AddressingMode::ZeroPageY
+        ));
+
         match self.state {
             // fetch opcode, increment PC
             State::T1 => {
@@ -677,6 +735,7 @@ impl<B: Bus> Cpu<B> {
             // fetch address, increment PC
             State::T2 => {
                 self.addr = self.read_u8(self.pc) as u16;
+                self.data = self.read_u8(self.addr);
                 inc!(self.pc);
 
                 if self.ir.mode == AddressingMode::ZeroPage {
@@ -693,7 +752,10 @@ impl<B: Bus> Cpu<B> {
                 } else {
                     inc!(self.addr, self.y as u16);
                 };
+
                 self.addr &= 0x00FF;
+                self.data = self.read_u8(self.addr);
+
                 self.state.t0();
             }
             State::T0 => return true,
@@ -703,6 +765,7 @@ impl<B: Bus> Cpu<B> {
         false
     }
 
+    /// Executes the current instruction in the `IR`.
     fn execute(&mut self) {
         use crate::Mnemonic::*;
 
@@ -828,14 +891,17 @@ impl<B: Bus> Cpu<B> {
         debug_assert!(self.ir.mode == AddressingMode::Implied);
 
         match self.state {
+            // fetch opcode, increment PC
             State::T1 => {
                 inc!(self.pc);
                 self.state.next();
             }
+            // read next instruction byte (and throw it away), increment PC
             State::T2 => {
                 inc!(self.pc);
                 self.state.next();
             }
+            // push PCH on stack
             State::T3 => {
                 if self.interrupt.src == Source::RES {
                     dec!(self.s);
@@ -845,6 +911,7 @@ impl<B: Bus> Cpu<B> {
 
                 self.state.next();
             }
+            // push PCL on stack
             State::T4 => {
                 if self.interrupt.src == Source::RES {
                     dec!(self.s);
@@ -854,6 +921,7 @@ impl<B: Bus> Cpu<B> {
 
                 self.state.next();
             }
+            // push P on stack
             State::T5 => {
                 if self.interrupt.src == Source::RES {
                     dec!(self.s);
@@ -864,6 +932,7 @@ impl<B: Bus> Cpu<B> {
                 self.set_flag(StatusFlag::I, true);
                 self.state.next();
             }
+            // fetch PCL
             State::T6 => {
                 self.pc = match self.interrupt.src {
                     Source::IRQ => self.read_u8(IRQ_VECTOR) as u16,
@@ -873,6 +942,7 @@ impl<B: Bus> Cpu<B> {
                 };
                 self.state.t0();
             }
+            // fetch PCH
             State::T0 => {
                 let hi = match self.interrupt.src {
                     Source::IRQ => self.read_u8(IRQ_VECTOR.wrapping_add(1)) as u16,
@@ -1126,12 +1196,7 @@ impl<B: Bus> Cpu<B> {
             return;
         }
 
-        if self.ir.mode == AddressingMode::Immediate {
-            self.a = self.data;
-        } else {
-            self.a = self.read_u8(self.addr);
-        }
-
+        self.a = self.data;
         self.set_flag_zn(self.a);
         self.state.t1();
     }
@@ -1142,12 +1207,7 @@ impl<B: Bus> Cpu<B> {
             return;
         }
 
-        if self.ir.mode == AddressingMode::Immediate {
-            self.x = self.data;
-        } else {
-            self.x = self.read_u8(self.addr);
-        }
-
+        self.x = self.data;
         self.set_flag_zn(self.x);
         self.state.t1();
     }
@@ -1158,12 +1218,7 @@ impl<B: Bus> Cpu<B> {
             return;
         }
 
-        if self.ir.mode == AddressingMode::Immediate {
-            self.y = self.data;
-        } else {
-            self.y = self.read_u8(self.addr);
-        }
-
+        self.y = self.data;
         self.set_flag_zn(self.y);
         self.state.t1();
     }
