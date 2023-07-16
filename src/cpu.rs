@@ -976,7 +976,16 @@ impl<B: Bus> Cpu<B> {
 
     /// Executes the BIT instruction.
     fn bit(&mut self) {
-        todo!()
+        if !self.resolve() {
+            return;
+        }
+
+        let res = self.a & self.data;
+        self.set_flag(StatusFlag::N, res & (StatusFlag::N as u8) != 0);
+        self.set_flag(StatusFlag::V, res & (StatusFlag::V as u8) != 0);
+        self.set_flag_z(res);
+
+        self.finish();
     }
 
     /// Executes the BMI instruction.
@@ -1148,7 +1157,13 @@ impl<B: Bus> Cpu<B> {
 
     /// Executes the EOR instruction.
     fn eor(&mut self) {
-        todo!()
+        if !self.resolve() {
+            return;
+        }
+
+        self.a ^= self.data;
+        self.set_flag_zn(self.a);
+        self.finish();
     }
 
     /// Executes the INC instruction.
@@ -1287,7 +1302,13 @@ impl<B: Bus> Cpu<B> {
 
     /// Executes the ORA instruction.
     fn ora(&mut self) {
-        todo!()
+        if !self.resolve() {
+            return;
+        }
+
+        self.a |= self.data;
+        self.set_flag_zn(self.a);
+        self.finish();
     }
 
     /// Executes the PHA instruction.
