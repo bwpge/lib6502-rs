@@ -456,13 +456,6 @@ impl<B: Bus> Cpu<B> {
         dec!(self.s);
     }
 
-    /// Increments the stack pointer and reads the byte at that address.
-    #[inline(always)]
-    fn _pop_u8(&mut self) -> u8 {
-        inc!(self.s);
-        self.read_u8(self.sp_u16())
-    }
-
     fn handle_interrupt(&mut self) {
         if self.interrupt.src == Source::None {
             self.interrupt.clear();
@@ -1313,32 +1306,151 @@ impl<B: Bus> Cpu<B> {
 
     /// Executes the PHA instruction.
     fn pha(&mut self) {
-        todo!()
+        match self.state {
+            // fetch opcode, increment PC
+            State::T1 => {
+                inc!(self.pc);
+                self.state.next();
+            }
+            // read next instruction byte (and throw it away)
+            State::T2 => {
+                self.state.t0();
+            }
+            // push register on stack, decrement S
+            State::T0 => {
+                self.push_u8(self.a);
+                self.finish();
+            }
+            _ => unreachable!(),
+        }
     }
 
     /// Executes the PHP instruction.
     fn php(&mut self) {
-        todo!()
+        match self.state {
+            // fetch opcode, increment PC
+            State::T1 => {
+                inc!(self.pc);
+                self.state.next();
+            }
+            // read next instruction byte (and throw it away)
+            State::T2 => {
+                self.state.t0();
+            }
+            // push register on stack, decrement S
+            State::T0 => {
+                self.push_u8(self.p | StatusFlag::_U as u8 | StatusFlag::B as u8);
+                self.finish();
+            }
+            _ => unreachable!(),
+        }
     }
 
     /// Executes the PLA instruction.
     fn pla(&mut self) {
-        todo!()
+        match self.state {
+            // fetch opcode, increment PC
+            State::T1 => {
+                inc!(self.pc);
+                self.state.next();
+            }
+            // read next instruction byte (and throw it away)
+            State::T2 => {
+                self.state.next();
+            }
+            // increment S
+            State::T3 => {
+                inc!(self.s);
+                self.state.t0();
+            }
+            // pull register from stack
+            State::T0 => {
+                self.a = self.read_u8(self.sp_u16());
+                self.set_flag_zn(self.a);
+                self.finish();
+            }
+            _ => unreachable!(),
+        }
     }
 
     /// Executes the PLP instruction.
     fn plp(&mut self) {
-        todo!()
+        match self.state {
+            // fetch opcode, increment PC
+            State::T1 => {
+                inc!(self.pc);
+                self.state.next();
+            }
+            // read next instruction byte (and throw it away)
+            State::T2 => {
+                self.state.next();
+            }
+            // increment S
+            State::T3 => {
+                inc!(self.s);
+                self.state.t0();
+            }
+            // pull register from stack
+            State::T0 => {
+                // ignore bit 5 and B from stack
+                let p = self.read_u8(self.sp_u16()) & 0b1100_1111;
+                self.p = (self.p & 0b0011_0000) | p;
+                self.finish();
+            }
+            _ => unreachable!(),
+        }
     }
 
     /// Executes the ROL instruction.
     fn rol(&mut self) {
-        todo!()
+        if !self.resolve() {
+            return;
+        }
+
+        if self.state == State::T0_2 {
+            self.a = rol_impl(self, self.a);
+            self.finish();
+            return;
+        }
+
+        match self.phase {
+            Phase::Modify => {
+                self.data = rol_impl(self, self.data);
+                self.phase.next();
+                self.state.t0();
+            }
+            Phase::Write => {
+                self.write_u8(self.addr, self.data);
+                self.finish();
+            }
+            _ => unreachable!(),
+        }
     }
 
     /// Executes the ROR instruction.
     fn ror(&mut self) {
-        todo!()
+        if !self.resolve() {
+            return;
+        }
+
+        if self.state == State::T0_2 {
+            self.a = ror_impl(self, self.a);
+            self.finish();
+            return;
+        }
+
+        match self.phase {
+            Phase::Modify => {
+                self.data = ror_impl(self, self.data);
+                self.phase.next();
+                self.state.t0();
+            }
+            Phase::Write => {
+                self.write_u8(self.addr, self.data);
+                self.finish();
+            }
+            _ => unreachable!(),
+        }
     }
 
     /// Executes the RTI instruction.
@@ -1381,6 +1493,26 @@ impl<B: Bus> Cpu<B> {
         self.phase = Phase::Read;
         self.state.t1();
     }
+}
+
+fn rol_impl<B: Bus>(cpu: &mut Cpu<B>, mut value: u8) -> u8 {
+    let carry = if cpu.get_flag(StatusFlag::C) { 1 } else { 0 };
+    cpu.set_flag(StatusFlag::C, value & 0x80 != 0);
+
+    value = ((value & 0x7F) << 1) | carry;
+    cpu.set_flag_zn(value);
+
+    value
+}
+
+fn ror_impl<B: Bus>(cpu: &mut Cpu<B>, mut value: u8) -> u8 {
+    let carry = if cpu.get_flag(StatusFlag::C) { 0x80 } else { 0 };
+    cpu.set_flag(StatusFlag::C, value & 1 != 0);
+
+    value = carry | ((value & 0x7F) >> 1);
+    cpu.set_flag_zn(value);
+
+    value
 }
 
 #[cfg(test)]
