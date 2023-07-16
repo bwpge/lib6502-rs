@@ -47,6 +47,71 @@ macro_rules! dec {
     }};
 }
 
+/// Implements common bodies of instructions.
+macro_rules! impl_inst {
+    ($self:ident, start) => {
+        if !($self.resolve()) {
+            return;
+        }
+    };
+    ($self:ident, end) => {
+        $self.finish();
+    };
+}
+
+/// Implements a clear or set flag instruction method (`CLC`, `SEC`, `CLI`, etc.).
+macro_rules! impl_flag {
+    ($name:ident, $flag:ident, $on:literal) => {
+        fn $name(&mut self) {
+            impl_inst!(self, start);
+            self.set_flag(StatusFlag::$flag, $on);
+            impl_inst!(self, end);
+        }
+    };
+}
+
+/// Implements a load instruction method (`LDA`, `LDX`, and `LDY`).
+macro_rules! impl_ld {
+    ($name:ident, $reg:ident) => {
+        fn $name(&mut self) {
+            impl_inst!(self, start);
+            self.$reg = self.data;
+            self.set_flag_zn(self.$reg);
+            impl_inst!(self, end);
+        }
+    };
+}
+
+/// Implements a store instruction body (`STA`, `STX`, and `STY`).
+macro_rules! impl_st {
+    ($name:ident, $reg:ident) => {
+        fn $name(&mut self) {
+            impl_inst!(self, start);
+            self.write_u8(self.addr, self.$reg);
+            impl_inst!(self, end);
+        }
+    };
+}
+
+/// Implements a transfer instruction body (`TAX`, `TAY`, `TSX`, etc.).
+macro_rules! impl_xfer {
+    ($name:ident, $to:ident, $from:ident) => {
+        fn $name(&mut self) {
+            impl_inst!(self, start);
+            self.$to = self.$from;
+            self.set_flag_zn(self.$to);
+            impl_inst!(self, end);
+        }
+    };
+    ($name:ident, $to:ident, $from:ident, no_flag) => {
+        fn $name(&mut self) {
+            impl_inst!(self, start);
+            self.$to = self.$from;
+            impl_inst!(self, end);
+        }
+    };
+}
+
 /// Represents a specific bit of the processor status register.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -885,7 +950,8 @@ impl<B: Bus> Cpu<B> {
 
         self.a &= self.data;
         self.set_flag_zn(self.a);
-        self.state.t1();
+
+        self.finish();
     }
 
     /// Executes the ASL instruction.
@@ -1011,45 +1077,10 @@ impl<B: Bus> Cpu<B> {
         todo!()
     }
 
-    /// Executes the CLC instruction.
-    fn clc(&mut self) {
-        if !self.resolve() {
-            return;
-        }
-
-        self.set_flag(StatusFlag::C, false);
-        self.state.t1();
-    }
-
-    /// Executes the CLD instruction.
-    fn cld(&mut self) {
-        if !self.resolve() {
-            return;
-        }
-
-        self.set_flag(StatusFlag::D, false);
-        self.state.t1();
-    }
-
-    /// Executes the CLI instruction.
-    fn cli(&mut self) {
-        if !self.resolve() {
-            return;
-        }
-
-        self.set_flag(StatusFlag::I, false);
-        self.state.t1();
-    }
-
-    /// Executes the CLV instruction.
-    fn clv(&mut self) {
-        if !self.resolve() {
-            return;
-        }
-
-        self.set_flag(StatusFlag::V, false);
-        self.state.t1();
-    }
+    impl_flag!(clc, C, false);
+    impl_flag!(cld, D, false);
+    impl_flag!(cli, I, false);
+    impl_flag!(clv, V, false);
 
     /// Executes the CMP instruction.
     fn cmp(&mut self) {
@@ -1232,38 +1263,9 @@ impl<B: Bus> Cpu<B> {
         todo!()
     }
 
-    /// Executes the LDA instruction.
-    fn lda(&mut self) {
-        if !self.resolve() {
-            return;
-        }
-
-        self.a = self.data;
-        self.set_flag_zn(self.a);
-        self.state.t1();
-    }
-
-    /// Executes the LDX instruction.
-    fn ldx(&mut self) {
-        if !self.resolve() {
-            return;
-        }
-
-        self.x = self.data;
-        self.set_flag_zn(self.x);
-        self.state.t1();
-    }
-
-    /// Executes the LDY instruction.
-    fn ldy(&mut self) {
-        if !self.resolve() {
-            return;
-        }
-
-        self.y = self.data;
-        self.set_flag_zn(self.y);
-        self.state.t1();
-    }
+    impl_ld!(lda, a);
+    impl_ld!(ldx, x);
+    impl_ld!(ldy, y);
 
     /// Executes the LSR instruction.
     fn lsr(&mut self) {
@@ -1333,136 +1335,30 @@ impl<B: Bus> Cpu<B> {
         todo!()
     }
 
-    /// Executes the SEC instruction.
-    fn sec(&mut self) {
-        if !self.resolve() {
-            return;
-        }
-
-        self.set_flag(StatusFlag::C, true);
-        self.state.t1();
-    }
-
-    /// Executes the SED instruction.
-    fn sed(&mut self) {
-        if !self.resolve() {
-            return;
-        }
-
-        self.set_flag(StatusFlag::D, true);
-        self.state.t1();
-    }
-
-    /// Executes the SEI instruction.
-    fn sei(&mut self) {
-        if !self.resolve() {
-            return;
-        }
-
-        self.set_flag(StatusFlag::I, true);
-        self.state.t1();
-    }
-
-    /// Executes the STA instruction.
-    fn sta(&mut self) {
-        if !self.resolve() {
-            return;
-        }
-
-        self.write_u8(self.addr, self.a);
-        self.state.t1();
-    }
-
-    /// Executes the STX instruction.
-    fn stx(&mut self) {
-        if !self.resolve() {
-            return;
-        }
-
-        self.write_u8(self.addr, self.x);
-        self.state.t1();
-    }
-
-    /// Executes the STY instruction.
-    fn sty(&mut self) {
-        if !self.resolve() {
-            return;
-        }
-
-        self.write_u8(self.addr, self.y);
-        self.state.t1();
-    }
-
-    /// Executes the TAX instruction.
-    fn tax(&mut self) {
-        if !self.resolve() {
-            return;
-        }
-
-        self.x = self.a;
-        self.set_flag_zn(self.x);
-        self.state.t1();
-    }
-
-    /// Executes the TAY instruction.
-    fn tay(&mut self) {
-        if !self.resolve() {
-            return;
-        }
-
-        self.y = self.a;
-        self.set_flag_zn(self.y);
-        self.state.t1();
-    }
-
-    /// Executes the TSX instruction.
-    fn tsx(&mut self) {
-        if !self.resolve() {
-            return;
-        }
-
-        self.x = self.s;
-        self.set_flag_zn(self.x);
-        self.state.t1();
-    }
-
-    /// Executes the TXA instruction.
-    fn txa(&mut self) {
-        if !self.resolve() {
-            return;
-        }
-
-        self.a = self.x;
-        self.set_flag_zn(self.a);
-        self.state.t1();
-    }
-
-    /// Executes the TXS instruction.
-    fn txs(&mut self) {
-        if !self.resolve() {
-            return;
-        }
-
-        self.s = self.x;
-        self.state.t1();
-    }
-
-    /// Executes the TYA instruction.
-    fn tya(&mut self) {
-        if !self.resolve() {
-            return;
-        }
-
-        self.a = self.y;
-        self.set_flag_zn(self.a);
-        self.state.t1();
-    }
+    impl_flag!(sec, C, true);
+    impl_flag!(sed, D, true);
+    impl_flag!(sei, I, true);
+    impl_st!(sta, a);
+    impl_st!(stx, x);
+    impl_st!(sty, y);
+    impl_xfer!(tax, x, a);
+    impl_xfer!(tay, y, a);
+    impl_xfer!(tsx, x, s);
+    impl_xfer!(txa, a, x);
+    impl_xfer!(txs, s, x, no_flag);
+    impl_xfer!(tya, a, y);
 
     fn illegal(&self) {
         panic!(
             "attempted to execute illegal instruction `0x{:02X}`",
             self.ir.opcode
         );
+    }
+
+    /// Finalizes instruction execution (reset states, phases, etc.).
+    fn finish(&mut self) {
+        self.phase = Phase::Read;
+        self.state.t1();
     }
 }
 
