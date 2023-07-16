@@ -260,8 +260,6 @@ const INSTRUCTION_SET: [Instruction; 256] = [
 ];
 
 /// Represents the type of [`Instruction`] by its three-letter code.
-///
-/// Typically the mnemonic is useless without the [`AddressingMode`].
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum Mnemonic {
     /// Add memory to accumulator with carry
@@ -391,8 +389,6 @@ impl Display for Mnemonic {
 }
 
 /// Represents different [`Instruction`] memory addressing modes.
-///
-/// Typically the addressing mode is useless without the [`Mnemonic`].
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum AddressingMode {
     /// Operand is accumulator (implied single byte instruction)
@@ -505,6 +501,15 @@ impl Instruction {
     /// Returns the one-byte opcode for this instruction.
     pub fn opcode(self) -> u8 {
         self.opcode
+    }
+
+    /// Returns whether or not this is a Read-Modify-Write instruction.
+    ///
+    /// RMW instructions require different state management than R or W.
+    pub fn is_rmw(self) -> bool {
+        use Mnemonic::*;
+
+        matches!(self.mnemonic, ASL | LSR | ROL | ROR | INC | DEC)
     }
 
     /// Creates a new [`Instruction`] in a `const` context with the given parameters.

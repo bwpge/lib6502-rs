@@ -129,6 +129,24 @@ impl State {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    #[default]
+    Read,
+    Modify,
+    Write,
+}
+
+impl Phase {
+    fn next(&mut self) {
+        *self = match *self {
+            Phase::Read => Phase::Modify,
+            Phase::Modify => Phase::Write,
+            Phase::Write => Phase::Read,
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct Interrupt {
     /// Where the interrupt was sourced from
     src: Source,
@@ -173,6 +191,10 @@ pub struct Cpu<B: Bus> {
     ///
     /// Used to coordinate between cycles what actions need to be done.
     state: State,
+    /// Represents the instruction phase.
+    ///
+    /// Used by read-modify-write instructions to coordinate between cycles.
+    phase: Phase,
     /// Combination of the ADL/ADH lines.
     addr: u16,
     /// Used between cycles to check if an address resolution resulted in a carry.
@@ -202,6 +224,7 @@ impl<B: Bus> Cpu<B> {
             bus,
             ir: Default::default(),
             state: State::default(),
+            phase: Default::default(),
             addr: Default::default(),
             addr_carry: Default::default(),
             data: Default::default(),
@@ -434,7 +457,11 @@ impl<B: Bus> Cpu<B> {
                 inc!(self.pc);
 
                 if self.ir.mode == AddressingMode::Absolute {
-                    self.state.t0();
+                    if self.ir.is_rmw() {
+                        self.state.next();
+                    } else {
+                        self.state.t0();
+                    }
                     return false;
                 }
 
@@ -446,22 +473,50 @@ impl<B: Bus> Cpu<B> {
                     (self.addr & 0x00FF) + self.y as u16
                 };
                 self.addr_carry = (lo & 0xFF00) != 0;
+                self.addr = hi | (lo & 0x00FF);
 
-                // check if additional cycle required
-                if self.addr_carry {
+                // check if additional cycle required for X/Y offset
+                // (RMW always requires an additional cycle)
+                if self.addr_carry || self.ir.is_rmw() {
                     self.state.next();
                 } else {
                     self.state.t0();
                 }
-
-                self.addr = hi | (lo & 0x00FF);
             }
-            // fix high byte of address
+            // fix high byte of address, or handle T4 of RMW
             State::T4 => {
-                inc!(self.addr, 0x100);
-                self.addr_carry = false;
-                self.state.t0();
+                if self.addr_carry {
+                    inc!(self.addr, 0x100);
+                    self.addr_carry = false;
+
+                    if !self.ir.is_rmw() {
+                        self.state.t0();
+                        return false;
+                    }
+                }
+
+                // RMW absolute mode can read in T4, abs,X/Y requires T5 to read
+                if self.ir.mode == AddressingMode::Absolute {
+                    self.data = self.read_u8(self.addr);
+                    self.phase.next();
+                }
+                self.state.next();
             }
+            // RMW T5, read or modify data
+            State::T5 => match self.phase {
+                Phase::Read => {
+                    self.data = self.read_u8(self.addr);
+                    self.phase.next();
+                    self.state.next();
+                }
+                Phase::Modify => return true,
+                _ => unreachable!(),
+            },
+            // RMW T6, modify or write data
+            State::T6 => match self.phase {
+                Phase::Modify | Phase::Write => return true,
+                _ => unreachable!(),
+            },
             State::T0 => return true,
             _ => unreachable!(),
         }
@@ -901,17 +956,51 @@ impl<B: Bus> Cpu<B> {
 
     /// Executes the DEC instruction.
     fn dec(&mut self) {
-        todo!()
+        if !self.resolve() {
+            return;
+        }
+
+        match self.phase {
+            Phase::Modify => {
+                dec!(self.data);
+                self.phase.next();
+                self.state.t0();
+            }
+            Phase::Write => {
+                self.write_u8(self.addr, self.data);
+                self.set_flag_zn(self.data);
+
+                self.phase = Phase::Read;
+                self.state.t1();
+            }
+            _ => unreachable!(),
+        }
     }
 
     /// Executes the DEX instruction.
     fn dex(&mut self) {
-        todo!()
+        if !self.resolve() {
+            return;
+        }
+
+        dec!(self.x);
+        self.set_flag_zn(self.x);
+
+        self.phase = Phase::Read;
+        self.state.t1();
     }
 
     /// Executes the DEY instruction.
     fn dey(&mut self) {
-        todo!()
+        if !self.resolve() {
+            return;
+        }
+
+        dec!(self.y);
+        self.set_flag_zn(self.y);
+
+        self.phase = Phase::Read;
+        self.state.t1();
     }
 
     /// Executes the EOR instruction.
@@ -921,17 +1010,51 @@ impl<B: Bus> Cpu<B> {
 
     /// Executes the INC instruction.
     fn inc(&mut self) {
-        todo!()
+        if !self.resolve() {
+            return;
+        }
+
+        match self.phase {
+            Phase::Modify => {
+                inc!(self.data);
+                self.phase.next();
+                self.state.t0();
+            }
+            Phase::Write => {
+                self.write_u8(self.addr, self.data);
+                self.set_flag_zn(self.data);
+
+                self.phase = Phase::Read;
+                self.state.t1();
+            }
+            _ => unreachable!(),
+        }
     }
 
     /// Executes the INX instruction.
     fn inx(&mut self) {
-        todo!()
+        if !self.resolve() {
+            return;
+        }
+
+        inc!(self.x);
+        self.set_flag_zn(self.x);
+
+        self.phase = Phase::Read;
+        self.state.t1();
     }
 
     /// Executes the INY instruction.
     fn iny(&mut self) {
-        todo!()
+        if !self.resolve() {
+            return;
+        }
+
+        inc!(self.y);
+        self.set_flag_zn(self.y);
+
+        self.phase = Phase::Read;
+        self.state.t1();
     }
 
     /// Executes the JMP instruction.
