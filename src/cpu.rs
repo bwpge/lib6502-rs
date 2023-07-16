@@ -431,7 +431,8 @@ impl<B: Bus> Cpu<B> {
             IndirectX => self.izx(),
             IndirectY => self.izy(),
             Relative => self.rel(),
-            ZeroPage | ZeroPageX | ZeroPageY => self.zpg(),
+            ZeroPage => self.zpg(),
+            ZeroPageX | ZeroPageY => self.zpg_xy(),
             _ => unreachable!(),
         }
     }
@@ -738,12 +739,40 @@ impl<B: Bus> Cpu<B> {
                 self.data = self.read_u8(self.addr);
                 inc!(self.pc);
 
-                if self.ir.mode == AddressingMode::ZeroPage {
+                if !self.ir.is_rmw() {
                     self.state.t0();
                     return false;
                 }
 
                 self.state.next();
+            }
+            State::T3 => {
+                debug_assert!(self.phase == Phase::Read);
+                self.data = self.read_u8(self.addr);
+                self.phase.next();
+                self.state.next();
+            }
+            State::T4 => {
+                debug_assert!(self.phase == Phase::Modify);
+                return true;
+            }
+            State::T0 => return true,
+            _ => unreachable!(),
+        }
+
+        false
+    }
+
+    fn zpg_xy(&mut self) -> bool {
+        debug_assert!(
+            self.ir.mode == AddressingMode::ZeroPageX || self.ir.mode == AddressingMode::ZeroPageY
+        );
+
+        match self.state {
+            // fetch address, increment PC
+            State::T2 => {
+                self.zpg();
+                self.state = State::T3;
             }
             // add index register to effective address
             State::T3 => {
@@ -752,14 +781,27 @@ impl<B: Bus> Cpu<B> {
                 } else {
                     inc!(self.addr, self.y as u16);
                 };
-
                 self.addr &= 0x00FF;
                 self.data = self.read_u8(self.addr);
 
-                self.state.t0();
+                if !self.ir.is_rmw() {
+                    self.state.t0();
+                    return false;
+                }
+
+                self.state.next();
             }
-            State::T0 => return true,
-            _ => unreachable!(),
+            State::T4 => {
+                debug_assert!(self.phase == Phase::Read);
+                self.data = self.read_u8(self.addr);
+                self.phase.next();
+                self.state.next();
+            }
+            State::T5 => {
+                debug_assert!(self.phase == Phase::Modify);
+                return true;
+            }
+            _ => return self.zpg(),
         }
 
         false
