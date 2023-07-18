@@ -3,9 +3,22 @@ mod common;
 use crate::common::setup;
 
 #[test]
+fn nops() {
+    let (_, mut cpu) = setup(asm! {
+        //                          RESET        7 cyc
+        0xC000: 0xEA 0xEA 0xEA; //  NOP NOP NOP  6 cyc
+        0xFFFC: 0x00 0xC0; //       program start $C000
+    });
+
+    assert_cpu!(cpu, pc = 0xC000, cyc = 7);
+
+    cpu.step_for(3);
+    assert_cpu!(cpu, pc = 0xC003, cyc = 13);
+}
+
+#[test]
 fn load_and_store() {
     let (ram, mut cpu) = setup(asm! {
-        size = 0x10000,
         //                          RESET       7 cyc
         0xC000: 0x4C 0xF5 0xC5; //  JMP $C5F5   3 cyc
         0xC5F5: 0xA2 0x01; //       LDX #$01    2 cyc
@@ -56,7 +69,6 @@ fn load_and_store() {
 #[test]
 fn zpg_store() {
     let (ram, mut cpu) = setup(asm! {
-        size = 0x10000,
         //                     RESET        7 cyc
         0xC000: 0xA9 0xFF; //  LDA #$FF     2 cyc
         0xC002: 0xA2 0x10; //  LDX #$10     2 cyc

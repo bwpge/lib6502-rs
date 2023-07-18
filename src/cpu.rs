@@ -1590,19 +1590,19 @@ mod tests {
     }
 
     macro_rules! assert_word_eq {
-        ($lhs:expr, $rhs:expr) => {{
+        ($lhs:expr, $rhs:expr) => {
             if $lhs != $rhs {
                 panic!(
                     "failed byte assertion:\n    \
-                    expr: `{}`\n  \
-                    expect: `0x{:04X}`\n     \
-                    got: `0x{:04X}`\n",
+                expr: `{}`\n  \
+                expect: `0x{:04X}`\n  \
+                actual: `0x{:04X}`\n",
                     stringify!($lhs),
                     $rhs,
                     $lhs,
                 );
             }
-        }};
+        };
     }
 
     macro_rules! assert_byte_eq {
@@ -1610,9 +1610,9 @@ mod tests {
             if $lhs != $rhs {
                 panic!(
                     "failed byte assertion:\n    \
-                    expr: `{}`\n  \
-                    expect: `0x{:02X}`\n     \
-                    got: `0x{:02X}`\n",
+                expr: `{}`\n  \
+                expect: `0x{:02X}`\n  \
+                actual: `0x{:02X}`\n",
                     stringify!($lhs),
                     $rhs,
                     $lhs,
@@ -1645,38 +1645,6 @@ mod tests {
             assert_word_eq!(cpu.sp_u16(), (sp & 0x00FF) | 0x0100);
             inc!(cpu.s);
         }
-    }
-
-    #[test]
-    fn cycles_nop() {
-        let mut cpu = cpu(StaticBus(0xEA));
-
-        cpu.step_for(3); // reset + 2 NOP
-
-        // 7 for reset + 4 for 2x NOP
-        assert_eq!(cpu.cycles, 11);
-    }
-
-    #[test]
-    fn cycles_lda_imm() {
-        let mut cpu = cpu(StaticBus(0xA9));
-
-        cpu.step_for(2); // reset + LDA #
-        assert_byte_eq!(cpu.a, 0xA9);
-
-        // 7 for reset + 2 for LDA #
-        assert_eq!(cpu.cycles, 9);
-    }
-
-    #[test]
-    fn cycles_lda_abs() {
-        let mut cpu = cpu(StaticBus(0xAD));
-
-        cpu.step_for(2); // reset + LDA abs
-        assert_byte_eq!(cpu.a, 0xAD);
-
-        // 7 for reset + 4 for LDA abs
-        assert_eq!(cpu.cycles, 11);
     }
 
     #[test]
