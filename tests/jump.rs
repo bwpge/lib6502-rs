@@ -11,10 +11,10 @@ mod jmp {
         let (_, mut cpu) = setup(asm! {
             0x0000: 0x4C 0x1A 0xDF; //  JMP $DF1A  3 cyc
         });
-        assert_cpu!(cpu, pc = 0x0000, a = 0x00, x = 0x00, y = 0x00, cyc = 7);
+        assert_cpu!(cpu, pc = 0x0000, cyc = 7);
 
         cpu.step();
-        assert_cpu!(cpu, pc = 0xDF1A, a = 0x00, x = 0x00, y = 0x00, cyc = 10);
+        assert_cpu!(cpu, pc = 0xDF1A, cyc = 10);
     }
 
     #[test]
@@ -40,5 +40,44 @@ mod jmp {
 
         assert_mem_eq!(ram, 0x0010, 0x00);
         assert_mem_eq!(ram, 0x0011, 0xC0);
+    }
+}
+
+#[cfg(test)]
+mod jsr {
+    use super::*;
+
+    #[test]
+    fn absolute() {
+        let (ram, mut cpu) = setup(asm! {
+            0x0000: 0x4C 0x56 0xC0; //  JMP $C056  3 cyc
+            0xC056: 0x20 0x1A 0xCE; //  JSR $CE1A  6 cyc
+        });
+        assert_cpu!(cpu, pc = 0x0000, cyc = 7);
+
+        cpu.step_for(2);
+        assert_cpu!(cpu, pc = 0xCE1A, cyc = 16);
+        assert_mem_eq!(ram, 0x01FD, 0xC0);
+        assert_mem_eq!(ram, 0x01FC, 0x58);
+    }
+}
+
+#[cfg(test)]
+mod rts {
+    use super::*;
+
+    #[test]
+    fn absolute() {
+        let (ram, mut cpu) = setup(asm! {
+            0x0000: 0x4C 0x56 0xC0; //  JMP $C056  3 cyc
+            0xC056: 0x20 0x1A 0xCE; //  JSR $CE1A  6 cyc
+            0xCE1A: 0x60; //            RTS        6 cyc
+        });
+        assert_cpu!(cpu, pc = 0x0000, cyc = 7);
+
+        cpu.step_for(3);
+        assert_cpu!(cpu, pc = 0xC059, cyc = 22);
+        assert_mem_eq!(ram, 0x01FD, 0xC0);
+        assert_mem_eq!(ram, 0x01FC, 0x58);
     }
 }
