@@ -1030,12 +1030,14 @@ impl<B: Bus> Cpu<B> {
         todo!()
     }
 
-    impl_branch!(bcc, !C);
     impl_branch!(bcs, C);
+    impl_branch!(bcc, !C);
     impl_branch!(beq, Z);
-    impl_branch!(bmi, N);
     impl_branch!(bne, !Z);
+    impl_branch!(bmi, N);
     impl_branch!(bpl, !N);
+    impl_branch!(bvs, V);
+    impl_branch!(bvc, !V);
 
     /// Executes the BIT instruction.
     fn bit(&mut self) {
@@ -1122,16 +1124,6 @@ impl<B: Bus> Cpu<B> {
             }
             _ => unreachable!(),
         }
-    }
-
-    /// Executes the BVC instruction.
-    fn bvc(&mut self) {
-        todo!()
-    }
-
-    /// Executes the BVS instruction.
-    fn bvs(&mut self) {
-        todo!()
     }
 
     impl_flag!(clc, C, false);
