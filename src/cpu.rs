@@ -59,6 +59,34 @@ macro_rules! impl_inst {
     };
 }
 
+/// Implements a branch instruction method (`BCC`, `BCS`, `BEQ`, etc.).
+macro_rules! impl_branch {
+    (@ $self:ident, $flag:ident) => {
+        $self.get_flag(StatusFlag::$flag)
+    };
+    (@ $self:ident, ! $flag:ident) => {
+        !$self.get_flag(StatusFlag::$flag)
+    };
+    ($name:ident, $($tt:tt)*) => {
+        fn $name(&mut self) {
+            impl_inst!(self, start);
+            match self.state {
+                State::T2 => {
+                    if impl_branch!(@ self, $($tt)*) {
+                        self.state = State::T3;
+                    } else {
+                        self.finish();
+                    }
+                }
+                State::T3 | State::T0 => {
+                    self.finish();
+                }
+                _ => unreachable!(),
+            }
+        }
+    };
+}
+
 /// Implements a clear or set flag instruction method (`CLC`, `SEC`, `CLI`, etc.).
 macro_rules! impl_flag {
     ($name:ident, $flag:ident, $on:literal) => {
@@ -262,7 +290,7 @@ pub struct Cpu<B: Bus> {
     phase: Phase,
     /// Combination of the ADL/ADH lines.
     addr: u16,
-    /// Used between cycles to check if an address resolution resulted in a carry.
+    /// Used between cycles to check if address resolution resulted in a carry.
     addr_carry: bool,
     /// Emulates the data bus (`db`), which would hold data to read or write.
     ///
@@ -771,9 +799,59 @@ impl<B: Bus> Cpu<B> {
 
     /// Resolves the operand for `relative` addressing mode.
     ///
+    /// Note that only branch instructions use this mode.
+    ///
     /// Returns `true` when resolution is complete, `false` otherwise.
     fn rel(&mut self) -> bool {
-        todo!()
+        match self.state {
+            // fetch opcode, increment PC
+            State::T1 => {
+                inc!(self.pc);
+                self.state.next();
+            }
+            // fetch operand, increment PC
+            State::T2 => {
+                self.data = self.read_u8(self.pc);
+                inc!(self.pc);
+
+                // instruction should check here if branch is taken
+                // and advance the state accordingly
+                return true;
+            }
+            // if branch is taken, add operand to PCL
+            State::T3 => {
+                let offset = self.data as u16;
+                let lo = (self.pc & 0x00FF) + offset;
+
+                self.addr_carry = lo & 0xFF00 != 0 || lo & 0x80 != 0;
+                self.pc = (self.pc & 0xFF00) | (lo & 0x00FF);
+
+                if self.addr_carry {
+                    self.state.t0();
+                    return false;
+                }
+
+                return true;
+            }
+            // fix PCH
+            State::T0 => {
+                debug_assert!(self.addr_carry);
+                self.addr_carry = false;
+
+                // if operand was negative, decrement to fix PCH
+                // otherwise, increment to fix PCH
+                if self.data & 0x80 != 0 {
+                    dec!(self.pc, 0x100);
+                } else {
+                    inc!(self.pc, 0x100);
+                }
+
+                return true;
+            }
+            _ => unreachable!(),
+        }
+
+        false
     }
 
     /// Resolves the operand for all `zeropage` addressing modes.
@@ -952,20 +1030,12 @@ impl<B: Bus> Cpu<B> {
         todo!()
     }
 
-    /// Executes the BCC instruction.
-    fn bcc(&mut self) {
-        todo!()
-    }
-
-    /// Executes the BCS instruction.
-    fn bcs(&mut self) {
-        todo!()
-    }
-
-    /// Executes the BEQ instruction.
-    fn beq(&mut self) {
-        todo!()
-    }
+    impl_branch!(bcc, !C);
+    impl_branch!(bcs, C);
+    impl_branch!(beq, Z);
+    impl_branch!(bmi, N);
+    impl_branch!(bne, !Z);
+    impl_branch!(bpl, !N);
 
     /// Executes the BIT instruction.
     fn bit(&mut self) {
@@ -979,21 +1049,6 @@ impl<B: Bus> Cpu<B> {
         self.set_flag_z(res);
 
         self.finish();
-    }
-
-    /// Executes the BMI instruction.
-    fn bmi(&mut self) {
-        todo!()
-    }
-
-    /// Executes the BNE instruction.
-    fn bne(&mut self) {
-        todo!()
-    }
-
-    /// Executes the BPL instruction.
-    fn bpl(&mut self) {
-        todo!()
     }
 
     /// Executes the BRK instruction.
