@@ -1324,7 +1324,46 @@ impl<B: Bus> Cpu<B> {
 
     /// Executes the JSR instruction.
     fn jsr(&mut self) {
-        todo!()
+        debug_assert!(self.ir.mode == AddressingMode::Absolute);
+
+        match self.state {
+            // fetch opcode, increment PC
+            State::T1 => {
+                inc!(self.pc);
+                self.state.next();
+            }
+            // fetch low address byte, increment PC
+            State::T2 => {
+                self.data = self.read_u8(self.pc);
+                inc!(self.pc);
+                self.state.next();
+            }
+            // internal cycle
+            State::T3 => {
+                self.state.next();
+            }
+            // push PCH on stack
+            State::T4 => {
+                let pch = (self.pc & 0xFF00) >> 8;
+                self.push_u8(pch as u8);
+                self.state.next();
+            }
+            // push PCL on stack
+            State::T5 => {
+                let pcl = self.pc as u8;
+                self.push_u8(pcl);
+                self.state.t0();
+            }
+            // copy low address byte to PCL, fetch high address byte to PCH
+            State::T0 => {
+                let pcl = self.data as u16;
+                self.data = self.read_u8(self.pc);
+                let pch = self.data as u16;
+                self.pc = (pch << 8) | pcl;
+                self.finish();
+            }
+            _ => unreachable!(),
+        }
     }
 
     impl_ld!(lda, a);
@@ -1532,12 +1571,86 @@ impl<B: Bus> Cpu<B> {
 
     /// Executes the RTI instruction.
     fn rti(&mut self) {
-        todo!()
+        debug_assert!(self.ir.mode == AddressingMode::Implied);
+
+        match self.state {
+            // fetch opcode, increment PC
+            State::T1 => {
+                inc!(self.pc);
+                self.state.next();
+            }
+            // read next instruction byte (and throw it away)
+            State::T2 => {
+                inc!(self.pc);
+                self.state.next();
+            }
+            // increment S
+            State::T3 => {
+                inc!(self.s);
+                self.state.next();
+            }
+            // pull P from stack, increment S
+            State::T4 => {
+                // ignore bit 5 and B from stack
+                let p = self.read_u8(self.sp_u16()) & 0b1100_1111;
+                self.p = (self.p & 0b0011_0000) | p;
+                inc!(self.s);
+                self.state.next();
+            }
+            // pull PCL from stack, increment S
+            State::T5 => {
+                self.pc = self.read_u8(self.sp_u16()) as u16;
+                inc!(self.s);
+                self.state.t0();
+            }
+            // pull PCH from stack
+            State::T0 => {
+                let pch = self.read_u8(self.sp_u16()) as u16;
+                self.pc |= pch << 8;
+                self.finish();
+            }
+            _ => unreachable!(),
+        }
     }
 
     /// Executes the RTS instruction.
     fn rts(&mut self) {
-        todo!()
+        debug_assert!(self.ir.mode == AddressingMode::Implied);
+
+        match self.state {
+            // fetch opcode, increment PC
+            State::T1 => {
+                inc!(self.pc);
+                self.state.next();
+            }
+            // read next instruction byte (and throw it away)
+            State::T2 => {
+                self.state.next();
+            }
+            // increment S
+            State::T3 => {
+                inc!(self.s);
+                self.state.next();
+            }
+            // pull PCL from stack, increment S
+            State::T4 => {
+                self.pc = self.read_u8(self.sp_u16()) as u16;
+                inc!(self.s);
+                self.state.next();
+            }
+            // pull PCH from stack
+            State::T5 => {
+                let pch = self.read_u8(self.sp_u16()) as u16;
+                self.pc |= pch << 8;
+                self.state.t0();
+            }
+            // increment PC
+            State::T0 => {
+                inc!(self.pc);
+                self.finish();
+            }
+            _ => unreachable!(),
+        }
     }
 
     /// Executes the SBC instruction.
