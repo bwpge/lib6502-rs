@@ -1027,7 +1027,28 @@ impl<B: Bus> Cpu<B> {
 
     /// Executes the ASL instruction.
     fn asl(&mut self) {
-        todo!()
+        if !self.resolve() {
+            return;
+        }
+
+        if self.state == State::T0_2 {
+            self.a = asl_impl(self, self.a);
+            self.finish();
+            return;
+        }
+
+        match self.phase {
+            Phase::Modify => {
+                self.data = asl_impl(self, self.data);
+                self.phase.next();
+                self.state.t0();
+            }
+            Phase::Write => {
+                self.write_u8(self.addr, self.data);
+                self.finish();
+            }
+            _ => unreachable!(),
+        }
     }
 
     impl_branch!(bcs, C);
@@ -1161,9 +1182,7 @@ impl<B: Bus> Cpu<B> {
             Phase::Write => {
                 self.write_u8(self.addr, self.data);
                 self.set_flag_zn(self.data);
-
-                self.phase = Phase::Read;
-                self.state.t1();
+                self.finish();
             }
             _ => unreachable!(),
         }
@@ -1177,9 +1196,7 @@ impl<B: Bus> Cpu<B> {
 
         dec!(self.x);
         self.set_flag_zn(self.x);
-
-        self.phase = Phase::Read;
-        self.state.t1();
+        self.finish();
     }
 
     /// Executes the DEY instruction.
@@ -1190,9 +1207,7 @@ impl<B: Bus> Cpu<B> {
 
         dec!(self.y);
         self.set_flag_zn(self.y);
-
-        self.phase = Phase::Read;
-        self.state.t1();
+        self.finish();
     }
 
     /// Executes the EOR instruction.
@@ -1221,9 +1236,7 @@ impl<B: Bus> Cpu<B> {
             Phase::Write => {
                 self.write_u8(self.addr, self.data);
                 self.set_flag_zn(self.data);
-
-                self.phase = Phase::Read;
-                self.state.t1();
+                self.finish();
             }
             _ => unreachable!(),
         }
@@ -1237,9 +1250,7 @@ impl<B: Bus> Cpu<B> {
 
         inc!(self.x);
         self.set_flag_zn(self.x);
-
-        self.phase = Phase::Read;
-        self.state.t1();
+        self.finish();
     }
 
     /// Executes the INY instruction.
@@ -1250,9 +1261,7 @@ impl<B: Bus> Cpu<B> {
 
         inc!(self.y);
         self.set_flag_zn(self.y);
-
-        self.phase = Phase::Read;
-        self.state.t1();
+        self.finish();
     }
 
     /// Executes the JMP instruction.
@@ -1324,7 +1333,28 @@ impl<B: Bus> Cpu<B> {
 
     /// Executes the LSR instruction.
     fn lsr(&mut self) {
-        todo!()
+        if !self.resolve() {
+            return;
+        }
+
+        if self.state == State::T0_2 {
+            self.a = lsr_impl(self, self.a);
+            self.finish();
+            return;
+        }
+
+        match self.phase {
+            Phase::Modify => {
+                self.data = lsr_impl(self, self.data);
+                self.phase.next();
+                self.state.t0();
+            }
+            Phase::Write => {
+                self.write_u8(self.addr, self.data);
+                self.finish();
+            }
+            _ => unreachable!(),
+        }
     }
 
     /// Executes the NOP instruction.
@@ -1540,6 +1570,24 @@ impl<B: Bus> Cpu<B> {
         self.phase = Phase::Read;
         self.state.t1();
     }
+}
+
+fn asl_impl<B: Bus>(cpu: &mut Cpu<B>, mut value: u8) -> u8 {
+    cpu.set_flag(StatusFlag::C, value & 0x80 != 0);
+
+    value = (value & 0x7F) << 1;
+    cpu.set_flag_zn(value);
+
+    value
+}
+
+fn lsr_impl<B: Bus>(cpu: &mut Cpu<B>, mut value: u8) -> u8 {
+    cpu.set_flag(StatusFlag::C, value & 0x1 != 0);
+
+    value = (value & 0xFE) >> 1;
+    cpu.set_flag_zn(value);
+
+    value
 }
 
 fn rol_impl<B: Bus>(cpu: &mut Cpu<B>, mut value: u8) -> u8 {
