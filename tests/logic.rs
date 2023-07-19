@@ -27,6 +27,33 @@ mod and {
 }
 
 #[cfg(test)]
+mod bit {
+    use super::*;
+
+    #[test]
+    fn zpg_abs() {
+        let (ram, mut cpu) = setup(asm! {
+            0x0000: 0xA9 0xFF; //       LDA #$FF   2 cyc
+            0x0002: 0xA2 0x55; //       LDX #$55   2 cyc
+            0x0004: 0x86 0xC0; //       STX $C0    3 cyc
+            0x0006: 0x24 0xC0; //       BIT $C0    3 cyc
+            0x0008: 0x2C 0xCC 0xCC; //  BIT $CCCC  4 cyc
+        });
+        assert_cpu!(cpu, pc = 0x0000, p = 0x24, a = 0x00, cyc = 7);
+
+        cpu.step_for(3); // LDA, LDX, STX
+        assert_cpu!(cpu, pc = 0x0006, p = 0x24, a = 0xFF, x = 0x55, cyc = 14);
+        assert_mem_eq!(ram, 0x00C0, 0x55);
+
+        cpu.step(); // BIT $C0 => $55
+        assert_cpu!(cpu, pc = 0x0008, p = 0x64, a = 0xFF, x = 0x55, cyc = 17);
+
+        cpu.step(); // BIT $CCCC => $00
+        assert_cpu!(cpu, pc = 0x000B, p = 0x26, a = 0xFF, x = 0x55, cyc = 21);
+    }
+}
+
+#[cfg(test)]
 mod ora {
     use super::*;
 
