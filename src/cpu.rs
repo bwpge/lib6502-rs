@@ -87,6 +87,18 @@ macro_rules! impl_branch {
     };
 }
 
+macro_rules! impl_compare {
+    ($name:ident, $reg:ident) => {
+        fn $name(&mut self) {
+            impl_inst!(self, start);
+            self.set_flag(StatusFlag::C, self.$reg >= self.data);
+            self.set_flag(StatusFlag::Z, self.$reg == self.data);
+            self.set_flag(StatusFlag::N, self.$reg >= 0x80);
+            impl_inst!(self, end);
+        }
+    };
+}
+
 /// Implements a clear or set flag instruction method (`CLC`, `SEC`, `CLI`, etc.).
 macro_rules! impl_flag {
     ($name:ident, $flag:ident, $on:literal) => {
@@ -1010,7 +1022,28 @@ impl<B: Bus> Cpu<B> {
 
     /// Executes the ADC instruction.
     fn adc(&mut self) {
-        todo!()
+        if !self.resolve() {
+            return;
+        }
+
+        if self.get_flag(StatusFlag::D) {
+            todo!();
+        } else {
+            let mut res = self.a.wrapping_add(self.data);
+            if self.get_flag(StatusFlag::C) {
+                inc!(res);
+            }
+
+            self.set_flag(
+                StatusFlag::V,
+                (self.a ^ res) & (self.data ^ res) & 0x80 != 0,
+            );
+            self.set_flag(StatusFlag::C, res < self.data);
+            self.set_flag_zn(res);
+            self.a = res;
+        }
+
+        self.finish();
     }
 
     /// Executes the AND instruction.
@@ -1151,21 +1184,9 @@ impl<B: Bus> Cpu<B> {
     impl_flag!(cld, D, false);
     impl_flag!(cli, I, false);
     impl_flag!(clv, V, false);
-
-    /// Executes the CMP instruction.
-    fn cmp(&mut self) {
-        todo!()
-    }
-
-    /// Executes the CPX instruction.
-    fn cpx(&mut self) {
-        todo!()
-    }
-
-    /// Executes the CPY instruction.
-    fn cpy(&mut self) {
-        todo!()
-    }
+    impl_compare!(cmp, a);
+    impl_compare!(cpx, x);
+    impl_compare!(cpy, y);
 
     /// Executes the DEC instruction.
     fn dec(&mut self) {
@@ -1655,7 +1676,28 @@ impl<B: Bus> Cpu<B> {
 
     /// Executes the SBC instruction.
     fn sbc(&mut self) {
-        todo!()
+        if !self.resolve() {
+            return;
+        }
+
+        if self.get_flag(StatusFlag::D) {
+            todo!();
+        } else {
+            let mut res = self.a.wrapping_sub(self.data);
+            if !self.get_flag(StatusFlag::C) {
+                dec!(res);
+            }
+
+            self.set_flag(
+                StatusFlag::V,
+                (self.a ^ res) & (!(self.data) ^ res) & 0x80 != 0,
+            );
+            self.set_flag(StatusFlag::C, res < self.a);
+            self.set_flag_zn(res);
+            self.a = res;
+        }
+
+        self.finish();
     }
 
     impl_flag!(sec, C, true);
