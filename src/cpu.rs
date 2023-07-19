@@ -832,11 +832,15 @@ impl<B: Bus> Cpu<B> {
             }
             // if branch is taken, add operand to PCL
             State::T3 => {
-                let offset = self.data as u16;
-                let lo = (self.pc & 0x00FF) + offset;
+                // adjust offset for 2's compliment
+                let mut offset = self.data as u16;
+                if self.data & 0x80 != 0 {
+                    offset |= 0xFF00;
+                }
 
-                self.addr_carry = lo & 0xFF00 != 0 || lo & 0x80 != 0;
-                self.pc = (self.pc & 0xFF00) | (lo & 0x00FF);
+                let addr = self.pc.wrapping_add(offset);
+                self.addr_carry = (addr & 0xFF00) != (self.pc & 0xFF00);
+                self.pc = (self.pc & 0xFF00) | (addr & 0x00FF);
 
                 if self.addr_carry {
                     self.state.t0();
