@@ -105,3 +105,28 @@ fn zpg_store() {
     assert_mem_eq!(ram, 0x00CC, 0xFF);
     assert_mem_eq!(ram, 0x00CD, 0x10);
 }
+
+#[test]
+fn fib_13() {
+    let (ram, mut cpu) = setup(asm! {
+        0x0000: 0xA0 0x0D; //        LDY #$0D
+        0x0002: 0xA9 0x00; //        LDA #$00
+        0x0004: 0x85 0xCC; //        STA $CC
+        0x0006: 0xA9 0x01; //        LDA #$01
+        0x0008: 0xAA; //      L0008  TAX
+        0x0009: 0x18; //             CLC
+        0x000A: 0x65 0xCC; //        ADC $CC
+        0x000C: 0x86 0xCC; //        STX $CC
+        0x000E: 0x88; //             DEY
+        0x000F: 0xD0 0xF7; //        BNE L0008
+        0x0011: 0xEA; //             NOP
+    });
+    assert_mem_eq!(ram, 0x00CC, 0x00);
+    assert_cpu!(cpu, pc = 0x0000, a = 0x00, x = 0x00, cyc = 7);
+
+    cpu.step_for(83);
+    // cycles tested in visual6502:
+    // -> 204 cycles (+1 for 0 start, +7 for reset) = 212
+    assert_cpu!(cpu, pc = 0x0012, a = 0x79, x = 0xE9, cyc = 212);
+    assert_mem_eq!(ram, 0x00CC, 0xE9);
+}
