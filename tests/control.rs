@@ -2,6 +2,40 @@ mod common;
 
 use crate::common::setup;
 
+#[test]
+fn brk() {
+    let (ram, mut cpu) = setup(asm! {
+        0x0000: 0x58; //  CLI  2 cyc
+        0x0001: 0x00; //  BRK  7 cyc
+    });
+    assert_cpu!(cpu, pc = 0x0000, p = 0x24, cyc = 7);
+    assert_mem_eq!(ram, 0x01FD, 0x00);
+    assert_mem_eq!(ram, 0x01FC, 0x00);
+    assert_mem_eq!(ram, 0x01FB, 0x00);
+
+    cpu.step();
+    assert_cpu!(cpu, pc = 0x0001, p = 0x20, cyc = 9);
+
+    cpu.step();
+    // ensure BRK sets I flag
+    assert_cpu!(cpu, pc = 0x0000, p = 0x24, cyc = 16);
+    // ensure PC pushed at PC+2 from BRK
+    assert_mem_eq!(ram, 0x01FD, 0x00);
+    assert_mem_eq!(ram, 0x01FC, 0x03);
+    // ensure P pushed to stack with B set
+    assert_mem_eq!(ram, 0x01FB, 0x30);
+
+    // ensure CLI BRK runs again the stack is correct
+    cpu.step_for(2);
+    assert_cpu!(cpu, pc = 0x0000, p = 0x24, cyc = 25);
+    assert_mem_eq!(ram, 0x01FD, 0x00);
+    assert_mem_eq!(ram, 0x01FC, 0x03);
+    assert_mem_eq!(ram, 0x01FB, 0x30);
+    assert_mem_eq!(ram, 0x01FA, 0x00);
+    assert_mem_eq!(ram, 0x01F9, 0x03);
+    assert_mem_eq!(ram, 0x01F8, 0x30);
+}
+
 #[cfg(test)]
 mod jmp {
     use super::*;
