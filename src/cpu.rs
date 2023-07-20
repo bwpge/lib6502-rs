@@ -179,6 +179,8 @@ pub enum Source {
     /// No interrupt
     #[default]
     None,
+    /// Software interrupt, similar to IRQ
+    BRK,
     /// Interrupt request
     IRQ,
     /// Non-maskable interrupt
@@ -438,8 +440,13 @@ impl<B: Bus> Cpu<B> {
             // decode instruction, don't increment PC yet
             self.ir = self.read_u8(self.pc).into();
 
+            // annotate BRK opcodes -- these don't need to be acknowledged
+            // since they are the active instruction
+            if self.ir.opcode == 0x00 && self.interrupt.src == Source::None {
+                self.interrupt.src = Source::BRK;
+            }
             // if the handler acknowledged the interrupt, overwrite the IR
-            if self.interrupt.ack {
+            else if self.interrupt.ack {
                 self.ir = Instruction::from(0);
             }
         }
@@ -497,10 +504,7 @@ impl<B: Bus> Cpu<B> {
     }
 
     fn handle_interrupt(&mut self) {
-        if self.interrupt.src == Source::None {
-            self.interrupt.clear();
-            return;
-        }
+        debug_assert!(self.interrupt.src != Source::None);
 
         // interrupts can only be handled on SYNC
         if self.state == State::T1
@@ -1114,6 +1118,7 @@ impl<B: Bus> Cpu<B> {
     /// Executes the BRK instruction.
     fn brk(&mut self) {
         debug_assert!(self.ir.mode == AddressingMode::Implied);
+        debug_assert!(self.interrupt.src != Source::None);
 
         match self.state {
             // fetch opcode, increment PC
@@ -1121,9 +1126,12 @@ impl<B: Bus> Cpu<B> {
                 inc!(self.pc);
                 self.state.next();
             }
-            // read next instruction byte (and throw it away), increment PC
+            // read next instruction byte (and throw it away)
+            // increment PC for BRK instruction
             State::T2 => {
-                inc!(self.pc);
+                if self.interrupt.src == Source::BRK {
+                    inc!(self.pc);
+                }
                 self.state.next();
             }
             // push PCH on stack
@@ -1148,36 +1156,41 @@ impl<B: Bus> Cpu<B> {
             }
             // push P on stack
             State::T5 => {
+                // this point determines which interrupt vector is used
+                self.addr = match self.interrupt.src {
+                    Source::IRQ | Source::BRK => IRQ_VECTOR,
+                    Source::NMI => NMI_VECTOR,
+                    Source::RES => RES_VECTOR,
+                    _ => unreachable!(),
+                };
+
                 if self.interrupt.src == Source::RES {
                     dec!(self.s);
                 } else {
-                    self.push_u8(self.p | StatusFlag::_U as u8 | StatusFlag::B as u8);
+                    // NMI/IRQ push with B clear, BRK push with B set
+                    let b =
+                        if self.interrupt.src == Source::NMI || self.interrupt.src == Source::IRQ {
+                            0
+                        } else {
+                            StatusFlag::B as u8
+                        };
+                    let p = self.p & 0b1100_1111 | StatusFlag::_U as u8 | b;
+                    self.push_u8(p);
                 }
 
-                self.set_flag(StatusFlag::I, true);
                 self.state.next();
             }
-            // fetch PCL
+            // fetch PCL, set I flag
             State::T6 => {
-                self.pc = match self.interrupt.src {
-                    Source::IRQ => self.read_u8(IRQ_VECTOR) as u16,
-                    Source::NMI => self.read_u8(NMI_VECTOR) as u16,
-                    Source::RES => self.read_u8(RES_VECTOR) as u16,
-                    _ => unreachable!(),
-                };
+                self.pc = self.read_u8(self.addr) as u16;
+                inc!(self.addr);
+                self.set_flag(StatusFlag::I, true);
                 self.state.t0();
             }
             // fetch PCH
             State::T0 => {
-                let hi = match self.interrupt.src {
-                    Source::IRQ => self.read_u8(IRQ_VECTOR.wrapping_add(1)) as u16,
-                    Source::NMI => self.read_u8(NMI_VECTOR.wrapping_add(1)) as u16,
-                    Source::RES => self.read_u8(RES_VECTOR.wrapping_add(1)) as u16,
-                    _ => unreachable!(),
-                };
-                self.pc |= hi << 8;
+                self.pc |= (self.read_u8(self.addr) as u16) << 8;
                 self.state.t1();
-                // TODO: fix when interrupt is cleared
                 self.interrupt.clear();
             }
             _ => unreachable!(),
