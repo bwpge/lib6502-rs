@@ -4,20 +4,8 @@ use std::{cell::RefCell, rc::Rc};
 
 use crate::{AddressingMode, Bus, Instruction};
 
-/// The non-maskable interrupt vector.
-///
-/// Used by the system to read the 16-bit address of the NMI subroutine.
 const NMI_VECTOR: u16 = 0xFFFA;
-
-/// The reset vector.
-///
-/// Used by the system to read the 16-bit starting address after a physical
-/// reset has been triggered (e.g., `RES` pin brought low for two cycles).
 const RES_VECTOR: u16 = 0xFFFC;
-
-/// The request interrupt vector.
-///
-/// Used by the system to read the 16-bit address of the RQI/BRK handler.
 const IRQ_VECTOR: u16 = 0xFFFE;
 
 /// A type that allows shared access with interior mutability.
@@ -47,108 +35,131 @@ macro_rules! dec {
     }};
 }
 
-/// Implements common bodies of instructions.
+/// Shorthand to increment the PC and advance the CPU state.
+///
+/// Optional second argument specifies the state to advance to.
+macro_rules! advance {
+    ($self:ident) => {{
+        inc!($self.pc);
+        $self.state.next();
+    }};
+    ($self:ident, $state:ident) => {{
+        inc!($self.pc);
+        $self.state = State::$state;
+    }};
+}
+
+/// Implements the CPU execution method body.
+macro_rules! exec_inst {
+    ($self:ident, $($variant:ident, $func:ident),* $(,)?) => {{
+        match $self.ir.mnemonic {
+            $(
+                $crate::Mnemonic::$variant => $self.$func(),
+            )*
+            _ => panic!(
+                "attempted to execute illegal instruction '{}' `0x{:02X}`",
+                $self.ir.mnemonic, $self.ir.opcode
+            ),
+        }
+    }};
+}
+
+/// Implements instruction methods.
+///
+/// Syntax for this macro body is any repetition of `TYPE => (name, args...),`.
 macro_rules! impl_inst {
-    ($self:ident, start) => {
-        if !($self.resolve()) {
+    ($($tt:tt => ( $name:ident, $($args:tt),* )),* $(,)?) => {
+        $(
+            fn $name(&mut self) {
+                if !(self.resolve()) {
+                    return;
+                }
+                impl_inst_inner!($tt, self, $($args),*);
+                self.finish();
+            }
+        )*
+    };
+}
+
+/// Implements the instruction method body with the given arguments from `impl_inst`.
+macro_rules! impl_inst_inner {
+    (BRANCH, $self:ident, $flag:ident, $set:literal) => {
+        match $self.state {
+            State::T2 => {
+                if $self.get_flag(StatusFlag::$flag) == $set {
+                    $self.state = State::T3;
+                    return;
+                }
+            }
+            State::T3 | State::T0 => (),
+            _ => unreachable!(),
+        }
+    };
+    (COMPARE, $self:ident, $reg:ident) => {
+        $self.set_flag(StatusFlag::C, $self.$reg >= $self.data);
+        $self.set_flag(StatusFlag::Z, $self.$reg == $self.data);
+        $self.set_flag(StatusFlag::N, $self.$reg >= 0x80);
+    };
+    (DECREG, $self:ident, $reg:ident) => {
+        dec!($self.$reg);
+        $self.set_flag_zn($self.$reg);
+    };
+    (FLAG, $self:ident, $flag:ident, $on:literal) => {
+        $self.set_flag(StatusFlag::$flag, $on);
+    };
+    (INCDEC, $self:ident, $op:tt) => {
+        match $self.phase {
+            Phase::Modify => {
+                $op!($self.data);
+                $self.phase.next();
+                $self.state.t0();
+                return;
+            }
+            Phase::Write => {
+                $self.write_u8($self.addr, $self.data);
+                $self.set_flag_zn($self.data);
+            }
+            _ => unreachable!(),
+        }
+    };
+    (INCREG, $self:ident, $reg:ident) => {
+        inc!($self.$reg);
+        $self.set_flag_zn($self.$reg);
+    };
+    (LOAD, $self:ident, $reg:ident) => {
+        $self.$reg = $self.data;
+        $self.set_flag_zn($self.$reg);
+    };
+    (LOGICAL, $self:ident, $op:tt) => {
+        $self.a $op $self.data;
+        $self.set_flag_zn($self.a);
+    };
+    (SHIFT_ROTATE, $self:ident, $func:ident) => {
+        if $self.state == State::T0_2 {
+            $self.a = $func($self, $self.a);
+            $self.finish();
             return;
         }
-    };
-    ($self:ident, end) => {
-        $self.finish();
-    };
-}
-
-/// Implements a branch instruction method (`BCC`, `BCS`, `BEQ`, etc.).
-macro_rules! impl_branch {
-    (@ $self:ident, $flag:ident) => {
-        $self.get_flag(StatusFlag::$flag)
-    };
-    (@ $self:ident, ! $flag:ident) => {
-        !$self.get_flag(StatusFlag::$flag)
-    };
-    ($name:ident, $($tt:tt)*) => {
-        fn $name(&mut self) {
-            impl_inst!(self, start);
-            match self.state {
-                State::T2 => {
-                    if impl_branch!(@ self, $($tt)*) {
-                        self.state = State::T3;
-                    } else {
-                        self.finish();
-                    }
-                }
-                State::T3 | State::T0 => {
-                    self.finish();
-                }
-                _ => unreachable!(),
+        match $self.phase {
+            Phase::Modify => {
+                $self.data = $func($self, $self.data);
+                $self.phase.next();
+                $self.state.t0();
+                return;
             }
+            Phase::Write => $self.write_u8($self.addr, $self.data),
+            _ => unreachable!(),
         }
     };
-}
-
-macro_rules! impl_compare {
-    ($name:ident, $reg:ident) => {
-        fn $name(&mut self) {
-            impl_inst!(self, start);
-            self.set_flag(StatusFlag::C, self.$reg >= self.data);
-            self.set_flag(StatusFlag::Z, self.$reg == self.data);
-            self.set_flag(StatusFlag::N, self.$reg >= 0x80);
-            impl_inst!(self, end);
-        }
+    (STORE, $self:ident, $reg:ident) => {
+        $self.write_u8($self.addr, $self.$reg);
     };
-}
-
-/// Implements a clear or set flag instruction method (`CLC`, `SEC`, `CLI`, etc.).
-macro_rules! impl_flag {
-    ($name:ident, $flag:ident, $on:literal) => {
-        fn $name(&mut self) {
-            impl_inst!(self, start);
-            self.set_flag(StatusFlag::$flag, $on);
-            impl_inst!(self, end);
-        }
+    (TRANSFER, $self:ident, $to:ident, $from:ident) => {
+        $self.$to = $self.$from;
+        $self.set_flag_zn($self.$to);
     };
-}
-
-/// Implements a load instruction method (`LDA`, `LDX`, and `LDY`).
-macro_rules! impl_ld {
-    ($name:ident, $reg:ident) => {
-        fn $name(&mut self) {
-            impl_inst!(self, start);
-            self.$reg = self.data;
-            self.set_flag_zn(self.$reg);
-            impl_inst!(self, end);
-        }
-    };
-}
-
-/// Implements a store instruction body (`STA`, `STX`, and `STY`).
-macro_rules! impl_st {
-    ($name:ident, $reg:ident) => {
-        fn $name(&mut self) {
-            impl_inst!(self, start);
-            self.write_u8(self.addr, self.$reg);
-            impl_inst!(self, end);
-        }
-    };
-}
-
-/// Implements a transfer instruction body (`TAX`, `TAY`, `TSX`, etc.).
-macro_rules! impl_xfer {
-    ($name:ident, $to:ident, $from:ident) => {
-        fn $name(&mut self) {
-            impl_inst!(self, start);
-            self.$to = self.$from;
-            self.set_flag_zn(self.$to);
-            impl_inst!(self, end);
-        }
-    };
-    ($name:ident, $to:ident, $from:ident, no_flag) => {
-        fn $name(&mut self) {
-            impl_inst!(self, start);
-            self.$to = self.$from;
-            impl_inst!(self, end);
-        }
+    (TRANSFER, $self:ident, $to:ident, $from:ident, NO_FLAGS) => {
+        $self.$to = $self.$from;
     };
 }
 
@@ -205,7 +216,7 @@ enum State {
 impl State {
     /// Advances to the next [`State`].
     ///
-    /// Does not work for `T1` -> `T2_0`.
+    /// Note that no state advances to `T2_0` with this method.
     fn next(&mut self) {
         *self = match *self {
             Self::T0 => Self::T1,
@@ -222,11 +233,6 @@ impl State {
     /// Sets the state to `T0`.
     fn t0(&mut self) {
         *self = Self::T0;
-    }
-
-    /// Sets the state to `T0_2`.
-    fn t0_2(&mut self) {
-        *self = Self::T0_2;
     }
 
     /// Sets the state to `T1`.
@@ -330,7 +336,7 @@ impl<B: Bus> Cpu<B> {
             p: StatusFlag::_U as u8,
             bus,
             ir: Default::default(),
-            state: State::default(),
+            state: Default::default(),
             phase: Default::default(),
             addr: Default::default(),
             addr_carry: Default::default(),
@@ -393,26 +399,20 @@ impl<B: Bus> Cpu<B> {
     }
 
     /// Sets the zero flag based on the given value.
-    ///
-    /// This method checks if the value is `0`.
     #[inline(always)]
     pub fn set_flag_z(&mut self, value: u8) {
         self.set_flag(StatusFlag::Z, value == 0);
     }
 
-    /// Sets the negative flag based on the given value.
-    ///
-    /// This method checks if the most significant bit is `1` (e.g.,
-    /// `value & 0x80 != 0`).
+    /// Sets the negative flag based on the given value by checking if the most
+    /// significant bit is `1`.
     #[inline(always)]
     pub fn set_flag_n(&mut self, value: u8) {
         self.set_flag(StatusFlag::N, value & 0x80 != 0);
     }
 
-    /// Convenience method to set the [`Z`][Z] and [`N`][N] flags based on the
-    /// same input value.
-    ///
-    /// These flags are commonly set together.
+    /// Shorthand to set the [`Z`][Z] and [`N`][N] flags based on the same input
+    /// value, as these flags are commonly set together.
     ///
     /// [Z]: StatusFlag::Z
     /// [N]: StatusFlag::N
@@ -432,7 +432,7 @@ impl<B: Bus> Cpu<B> {
     pub fn clock(&mut self) {
         // check for interrupts that can be handled
         if self.interrupt.src != Source::None {
-            self.handle_interrupt();
+            self.check_interrupt();
         }
 
         // SYNC state indicates instruction is ready to start
@@ -503,7 +503,8 @@ impl<B: Bus> Cpu<B> {
         dec!(self.s);
     }
 
-    fn handle_interrupt(&mut self) {
+    /// Checks if the current [`Interrupt`] can be handled in this clock cycle.
+    fn check_interrupt(&mut self) {
         debug_assert!(self.interrupt.src != Source::None);
 
         // interrupts can only be handled on SYNC
@@ -550,15 +551,11 @@ impl<B: Bus> Cpu<B> {
 
         match self.state {
             // fetch opcode, increment PC
-            State::T1 => {
-                inc!(self.pc);
-                self.state.next();
-            }
+            State::T1 => advance!(self),
             // fetch low byte of address, increment PC
             State::T2 => {
                 self.addr = self.read_u8(self.pc) as u16;
-                inc!(self.pc);
-                self.state.next();
+                advance!(self);
             }
             // fetch high byte of address, increment PC
             State::T3 => {
@@ -669,10 +666,7 @@ impl<B: Bus> Cpu<B> {
     /// Returns `true` when resolution is complete, `false` otherwise.
     fn imm(&mut self) -> bool {
         match self.state {
-            State::T1 => {
-                inc!(self.pc);
-                self.state.t0_2();
-            }
+            State::T1 => advance!(self, T0_2),
             State::T0_2 => {
                 self.data = self.read_u8(self.pc);
                 inc!(self.pc);
@@ -693,10 +687,7 @@ impl<B: Bus> Cpu<B> {
         );
 
         match self.state {
-            State::T1 => {
-                inc!(self.pc);
-                self.state.t0_2();
-            }
+            State::T1 => advance!(self, T0_2),
             State::T0_2 => {
                 if self.ir.mode == AddressingMode::Accumulator {
                     self.data = self.a;
@@ -717,15 +708,11 @@ impl<B: Bus> Cpu<B> {
     fn izx(&mut self) -> bool {
         match self.state {
             // fetch opcode, increment PC
-            State::T1 => {
-                inc!(self.pc);
-                self.state.next();
-            }
+            State::T1 => advance!(self),
             // fetch pointer address, increment PC
             State::T2 => {
                 self.data = self.read_u8(self.pc);
-                inc!(self.pc);
-                self.state.next();
+                advance!(self);
             }
             // add X to get effective address
             State::T3 => {
@@ -761,15 +748,11 @@ impl<B: Bus> Cpu<B> {
     fn izy(&mut self) -> bool {
         match self.state {
             // fetch opcode, increment PC
-            State::T1 => {
-                inc!(self.pc);
-                self.state.next();
-            }
+            State::T1 => advance!(self),
             // fetch pointer address, increment PC
             State::T2 => {
                 self.data = self.read_u8(self.pc);
-                inc!(self.pc);
-                self.state.next();
+                advance!(self);
             }
             // fetch effective address low
             State::T3 => {
@@ -821,10 +804,7 @@ impl<B: Bus> Cpu<B> {
     fn rel(&mut self) -> bool {
         match self.state {
             // fetch opcode, increment PC
-            State::T1 => {
-                inc!(self.pc);
-                self.state.next();
-            }
+            State::T1 => advance!(self),
             // fetch operand, increment PC
             State::T2 => {
                 self.data = self.read_u8(self.pc);
@@ -885,10 +865,7 @@ impl<B: Bus> Cpu<B> {
 
         match self.state {
             // fetch opcode, increment PC
-            State::T1 => {
-                inc!(self.pc);
-                self.state.next();
-            }
+            State::T1 => advance!(self),
             // fetch address, increment PC
             State::T2 => {
                 self.addr = self.read_u8(self.pc) as u16;
@@ -965,70 +942,63 @@ impl<B: Bus> Cpu<B> {
 
     /// Executes the current instruction in the `IR`.
     fn execute(&mut self) {
-        use crate::Mnemonic::*;
-
-        match self.ir.mnemonic {
-            ADC => self.adc(),
-            AND => self.and(),
-            ASL => self.asl(),
-            BCC => self.bcc(),
-            BCS => self.bcs(),
-            BEQ => self.beq(),
-            BIT => self.bit(),
-            BMI => self.bmi(),
-            BNE => self.bne(),
-            BPL => self.bpl(),
-            BRK => self.brk(),
-            BVC => self.bvc(),
-            BVS => self.bvs(),
-            CLC => self.clc(),
-            CLD => self.cld(),
-            CLI => self.cli(),
-            CLV => self.clv(),
-            CMP => self.cmp(),
-            CPX => self.cpx(),
-            CPY => self.cpy(),
-            DEC => self.dec(),
-            DEX => self.dex(),
-            DEY => self.dey(),
-            EOR => self.eor(),
-            INC => self.inc(),
-            INX => self.inx(),
-            INY => self.iny(),
-            JMP => self.jmp(),
-            JSR => self.jsr(),
-            LDA => self.lda(),
-            LDX => self.ldx(),
-            LDY => self.ldy(),
-            LSR => self.lsr(),
-            NOP => self.nop(),
-            ORA => self.ora(),
-            PHA => self.pha(),
-            PHP => self.php(),
-            PLA => self.pla(),
-            PLP => self.plp(),
-            ROL => self.rol(),
-            ROR => self.ror(),
-            RTI => self.rti(),
-            RTS => self.rts(),
-            SBC => self.sbc(),
-            SEC => self.sec(),
-            SED => self.sed(),
-            SEI => self.sei(),
-            STA => self.sta(),
-            STX => self.stx(),
-            STY => self.sty(),
-            TAX => self.tax(),
-            TAY => self.tay(),
-            TSX => self.tsx(),
-            TXA => self.txa(),
-            TXS => self.txs(),
-            TYA => self.tya(),
-            ILLEGAL => self.illegal(),
-        }
+        exec_inst!(
+            self, ADC, adc, AND, and, ASL, asl, BCC, bcc, BCS, bcs, BEQ, beq, BIT, bit, BMI, bmi,
+            BNE, bne, BPL, bpl, BRK, brk, BVC, bvc, BVS, bvs, CLC, clc, CLD, cld, CLI, cli, CLV,
+            clv, CMP, cmp, CPX, cpx, CPY, cpy, DEC, dec, DEX, dex, DEY, dey, EOR, eor, INC, inc,
+            INX, inx, INY, iny, JMP, jmp, JSR, jsr, LDA, lda, LDX, ldx, LDY, ldy, LSR, lsr, NOP,
+            nop, ORA, ora, PHA, pha, PHP, php, PLA, pla, PLP, plp, ROL, rol, ROR, ror, RTI, rti,
+            RTS, rts, SBC, sbc, SEC, sec, SED, sed, SEI, sei, STA, sta, STX, stx, STY, sty, TAX,
+            tax, TAY, tay, TSX, tsx, TXA, txa, TXS, txs, TYA, tya
+        );
     }
 
-    /// Executes the ADC instruction.
+    impl_inst! {
+        BRANCH => (bcs, C, true),
+        BRANCH => (bcc, C, false),
+        BRANCH => (beq, Z, true),
+        BRANCH => (bne, Z, false),
+        BRANCH => (bmi, N, true),
+        BRANCH => (bpl, N, false),
+        BRANCH => (bvs, V, true),
+        BRANCH => (bvc, V, false),
+        COMPARE => (cmp, a),
+        COMPARE => (cpx, x),
+        COMPARE => (cpy, y),
+        FLAG => (clc, C, false),
+        FLAG => (cld, D, false),
+        FLAG => (cli, I, false),
+        FLAG => (clv, V, false),
+        FLAG => (sec, C, true),
+        FLAG => (sed, D, true),
+        FLAG => (sei, I, true),
+        DECREG => (dex, x),
+        DECREG => (dey, y),
+        INCDEC => (dec, dec),
+        INCDEC => (inc, inc),
+        INCREG => (inx, x),
+        INCREG => (iny, y),
+        LOAD => (lda, a),
+        LOAD => (ldx, x),
+        LOAD => (ldy, y),
+        LOGICAL => (and, &=),
+        LOGICAL => (ora, |=),
+        LOGICAL => (eor, ^=),
+        SHIFT_ROTATE => (asl, asl_impl),
+        SHIFT_ROTATE => (lsr, lsr_impl),
+        SHIFT_ROTATE => (rol, rol_impl),
+        SHIFT_ROTATE => (ror, ror_impl),
+        STORE => (sta, a),
+        STORE => (stx, x),
+        STORE => (sty, y),
+        TRANSFER => (tax, x, a),
+        TRANSFER => (tay, y, a),
+        TRANSFER => (tsx, x, s),
+        TRANSFER => (txa, a, x),
+        TRANSFER => (txs, s, x, NO_FLAGS),
+        TRANSFER => (tya, a, y),
+    }
+
     fn adc(&mut self) {
         if !self.resolve() {
             return;
@@ -1037,71 +1007,12 @@ impl<B: Bus> Cpu<B> {
         if self.get_flag(StatusFlag::D) {
             todo!();
         } else {
-            let mut res = self.a.wrapping_add(self.data);
-            if self.get_flag(StatusFlag::C) {
-                inc!(res);
-            }
-
-            self.set_flag(
-                StatusFlag::V,
-                (self.a ^ res) & (self.data ^ res) & 0x80 != 0,
-            );
-            self.set_flag(StatusFlag::C, res < self.data);
-            self.set_flag_zn(res);
-            self.a = res;
+            self.a = binary_add(self, self.data);
         }
 
         self.finish();
     }
 
-    /// Executes the AND instruction.
-    fn and(&mut self) {
-        if !self.resolve() {
-            return;
-        }
-
-        self.a &= self.data;
-        self.set_flag_zn(self.a);
-
-        self.finish();
-    }
-
-    /// Executes the ASL instruction.
-    fn asl(&mut self) {
-        if !self.resolve() {
-            return;
-        }
-
-        if self.state == State::T0_2 {
-            self.a = asl_impl(self, self.a);
-            self.finish();
-            return;
-        }
-
-        match self.phase {
-            Phase::Modify => {
-                self.data = asl_impl(self, self.data);
-                self.phase.next();
-                self.state.t0();
-            }
-            Phase::Write => {
-                self.write_u8(self.addr, self.data);
-                self.finish();
-            }
-            _ => unreachable!(),
-        }
-    }
-
-    impl_branch!(bcs, C);
-    impl_branch!(bcc, !C);
-    impl_branch!(beq, Z);
-    impl_branch!(bne, !Z);
-    impl_branch!(bmi, N);
-    impl_branch!(bpl, !N);
-    impl_branch!(bvs, V);
-    impl_branch!(bvc, !V);
-
-    /// Executes the BIT instruction.
     fn bit(&mut self) {
         if !self.resolve() {
             return;
@@ -1115,17 +1026,13 @@ impl<B: Bus> Cpu<B> {
         self.finish();
     }
 
-    /// Executes the BRK instruction.
     fn brk(&mut self) {
         debug_assert!(self.ir.mode == AddressingMode::Implied);
         debug_assert!(self.interrupt.src != Source::None);
 
         match self.state {
             // fetch opcode, increment PC
-            State::T1 => {
-                inc!(self.pc);
-                self.state.next();
-            }
+            State::T1 => advance!(self),
             // read next instruction byte (and throw it away)
             // increment PC for BRK instruction
             State::T2 => {
@@ -1197,112 +1104,6 @@ impl<B: Bus> Cpu<B> {
         }
     }
 
-    impl_flag!(clc, C, false);
-    impl_flag!(cld, D, false);
-    impl_flag!(cli, I, false);
-    impl_flag!(clv, V, false);
-    impl_compare!(cmp, a);
-    impl_compare!(cpx, x);
-    impl_compare!(cpy, y);
-
-    /// Executes the DEC instruction.
-    fn dec(&mut self) {
-        if !self.resolve() {
-            return;
-        }
-
-        match self.phase {
-            Phase::Modify => {
-                dec!(self.data);
-                self.phase.next();
-                self.state.t0();
-            }
-            Phase::Write => {
-                self.write_u8(self.addr, self.data);
-                self.set_flag_zn(self.data);
-                self.finish();
-            }
-            _ => unreachable!(),
-        }
-    }
-
-    /// Executes the DEX instruction.
-    fn dex(&mut self) {
-        if !self.resolve() {
-            return;
-        }
-
-        dec!(self.x);
-        self.set_flag_zn(self.x);
-        self.finish();
-    }
-
-    /// Executes the DEY instruction.
-    fn dey(&mut self) {
-        if !self.resolve() {
-            return;
-        }
-
-        dec!(self.y);
-        self.set_flag_zn(self.y);
-        self.finish();
-    }
-
-    /// Executes the EOR instruction.
-    fn eor(&mut self) {
-        if !self.resolve() {
-            return;
-        }
-
-        self.a ^= self.data;
-        self.set_flag_zn(self.a);
-        self.finish();
-    }
-
-    /// Executes the INC instruction.
-    fn inc(&mut self) {
-        if !self.resolve() {
-            return;
-        }
-
-        match self.phase {
-            Phase::Modify => {
-                inc!(self.data);
-                self.phase.next();
-                self.state.t0();
-            }
-            Phase::Write => {
-                self.write_u8(self.addr, self.data);
-                self.set_flag_zn(self.data);
-                self.finish();
-            }
-            _ => unreachable!(),
-        }
-    }
-
-    /// Executes the INX instruction.
-    fn inx(&mut self) {
-        if !self.resolve() {
-            return;
-        }
-
-        inc!(self.x);
-        self.set_flag_zn(self.x);
-        self.finish();
-    }
-
-    /// Executes the INY instruction.
-    fn iny(&mut self) {
-        if !self.resolve() {
-            return;
-        }
-
-        inc!(self.y);
-        self.set_flag_zn(self.y);
-        self.finish();
-    }
-
-    /// Executes the JMP instruction.
     fn jmp(&mut self) {
         debug_assert!(
             self.ir.mode == AddressingMode::Absolute || self.ir.mode == AddressingMode::Indirect
@@ -1310,16 +1111,12 @@ impl<B: Bus> Cpu<B> {
 
         match (self.ir.mode, self.state) {
             // fetch opcode, increment PC
-            (AddressingMode::Absolute | AddressingMode::Indirect, State::T1) => {
-                inc!(self.pc);
-                self.state.next();
-            }
+            (AddressingMode::Absolute | AddressingMode::Indirect, State::T1) => advance!(self),
 
             // fetch low address byte, increment PC
             (AddressingMode::Absolute, State::T2) => {
                 self.addr = self.read_u8(self.pc) as u16;
-                inc!(self.pc);
-                self.state.t0();
+                advance!(self, T0);
             }
             // copy low address byte to PCL, fetch high address byte to PCH
             (AddressingMode::Absolute, State::T0) => {
@@ -1331,14 +1128,12 @@ impl<B: Bus> Cpu<B> {
             // fetch pointer address low, increment PC
             (AddressingMode::Indirect, State::T2) => {
                 self.addr = self.read_u8(self.pc) as u16;
-                inc!(self.pc);
-                self.state.next();
+                advance!(self);
             }
             // fetch pointer address high, increment PC
             (AddressingMode::Indirect, State::T3) => {
                 self.addr |= (self.read_u8(self.pc) as u16) << 8;
-                inc!(self.pc);
-                self.state.next();
+                advance!(self);
             }
             // fetch low address to latch
             (AddressingMode::Indirect, State::T4) => {
@@ -1360,26 +1155,19 @@ impl<B: Bus> Cpu<B> {
         }
     }
 
-    /// Executes the JSR instruction.
     fn jsr(&mut self) {
         debug_assert!(self.ir.mode == AddressingMode::Absolute);
 
         match self.state {
             // fetch opcode, increment PC
-            State::T1 => {
-                inc!(self.pc);
-                self.state.next();
-            }
+            State::T1 => advance!(self),
             // fetch low address byte, increment PC
             State::T2 => {
                 self.data = self.read_u8(self.pc);
-                inc!(self.pc);
-                self.state.next();
+                advance!(self);
             }
             // internal cycle
-            State::T3 => {
-                self.state.next();
-            }
+            State::T3 => self.state.next(),
             // push PCH on stack
             State::T4 => {
                 let pch = (self.pc & 0xFF00) >> 8;
@@ -1404,72 +1192,20 @@ impl<B: Bus> Cpu<B> {
         }
     }
 
-    impl_ld!(lda, a);
-    impl_ld!(ldx, x);
-    impl_ld!(ldy, y);
-
-    /// Executes the LSR instruction.
-    fn lsr(&mut self) {
-        if !self.resolve() {
-            return;
-        }
-
-        if self.state == State::T0_2 {
-            self.a = lsr_impl(self, self.a);
-            self.finish();
-            return;
-        }
-
-        match self.phase {
-            Phase::Modify => {
-                self.data = lsr_impl(self, self.data);
-                self.phase.next();
-                self.state.t0();
-            }
-            Phase::Write => {
-                self.write_u8(self.addr, self.data);
-                self.finish();
-            }
-            _ => unreachable!(),
-        }
-    }
-
-    /// Executes the NOP instruction.
-    #[inline(always)]
     fn nop(&mut self) {
         match self.state {
-            State::T1 => {
-                inc!(self.pc);
-                self.state.t0_2();
-            }
+            State::T1 => advance!(self, T0_2),
             State::T0_2 => self.state.t1(),
             _ => unreachable!(),
         }
     }
 
-    /// Executes the ORA instruction.
-    fn ora(&mut self) {
-        if !self.resolve() {
-            return;
-        }
-
-        self.a |= self.data;
-        self.set_flag_zn(self.a);
-        self.finish();
-    }
-
-    /// Executes the PHA instruction.
     fn pha(&mut self) {
         match self.state {
             // fetch opcode, increment PC
-            State::T1 => {
-                inc!(self.pc);
-                self.state.next();
-            }
+            State::T1 => advance!(self),
             // read next instruction byte (and throw it away)
-            State::T2 => {
-                self.state.t0();
-            }
+            State::T2 => self.state.t0(),
             // push register on stack, decrement S
             State::T0 => {
                 self.push_u8(self.a);
@@ -1479,18 +1215,12 @@ impl<B: Bus> Cpu<B> {
         }
     }
 
-    /// Executes the PHP instruction.
     fn php(&mut self) {
         match self.state {
             // fetch opcode, increment PC
-            State::T1 => {
-                inc!(self.pc);
-                self.state.next();
-            }
+            State::T1 => advance!(self),
             // read next instruction byte (and throw it away)
-            State::T2 => {
-                self.state.t0();
-            }
+            State::T2 => self.state.t0(),
             // push register on stack, decrement S
             State::T0 => {
                 self.push_u8(self.p | StatusFlag::_U as u8 | StatusFlag::B as u8);
@@ -1500,14 +1230,10 @@ impl<B: Bus> Cpu<B> {
         }
     }
 
-    /// Executes the PLA instruction.
     fn pla(&mut self) {
         match self.state {
             // fetch opcode, increment PC
-            State::T1 => {
-                inc!(self.pc);
-                self.state.next();
-            }
+            State::T1 => advance!(self),
             // read next instruction byte (and throw it away)
             State::T2 => {
                 self.state.next();
@@ -1527,14 +1253,10 @@ impl<B: Bus> Cpu<B> {
         }
     }
 
-    /// Executes the PLP instruction.
     fn plp(&mut self) {
         match self.state {
             // fetch opcode, increment PC
-            State::T1 => {
-                inc!(self.pc);
-                self.state.next();
-            }
+            State::T1 => advance!(self),
             // read next instruction byte (and throw it away)
             State::T2 => {
                 self.state.next();
@@ -1555,73 +1277,14 @@ impl<B: Bus> Cpu<B> {
         }
     }
 
-    /// Executes the ROL instruction.
-    fn rol(&mut self) {
-        if !self.resolve() {
-            return;
-        }
-
-        if self.state == State::T0_2 {
-            self.a = rol_impl(self, self.a);
-            self.finish();
-            return;
-        }
-
-        match self.phase {
-            Phase::Modify => {
-                self.data = rol_impl(self, self.data);
-                self.phase.next();
-                self.state.t0();
-            }
-            Phase::Write => {
-                self.write_u8(self.addr, self.data);
-                self.finish();
-            }
-            _ => unreachable!(),
-        }
-    }
-
-    /// Executes the ROR instruction.
-    fn ror(&mut self) {
-        if !self.resolve() {
-            return;
-        }
-
-        if self.state == State::T0_2 {
-            self.a = ror_impl(self, self.a);
-            self.finish();
-            return;
-        }
-
-        match self.phase {
-            Phase::Modify => {
-                self.data = ror_impl(self, self.data);
-                self.phase.next();
-                self.state.t0();
-            }
-            Phase::Write => {
-                self.write_u8(self.addr, self.data);
-                self.finish();
-            }
-            _ => unreachable!(),
-        }
-    }
-
-    /// Executes the RTI instruction.
     fn rti(&mut self) {
         debug_assert!(self.ir.mode == AddressingMode::Implied);
 
         match self.state {
             // fetch opcode, increment PC
-            State::T1 => {
-                inc!(self.pc);
-                self.state.next();
-            }
+            State::T1 => advance!(self),
             // read next instruction byte (and throw it away)
-            State::T2 => {
-                inc!(self.pc);
-                self.state.next();
-            }
+            State::T2 => advance!(self),
             // increment S
             State::T3 => {
                 inc!(self.s);
@@ -1651,16 +1314,12 @@ impl<B: Bus> Cpu<B> {
         }
     }
 
-    /// Executes the RTS instruction.
     fn rts(&mut self) {
         debug_assert!(self.ir.mode == AddressingMode::Implied);
 
         match self.state {
             // fetch opcode, increment PC
-            State::T1 => {
-                inc!(self.pc);
-                self.state.next();
-            }
+            State::T1 => advance!(self),
             // read next instruction byte (and throw it away)
             State::T2 => {
                 self.state.next();
@@ -1691,7 +1350,6 @@ impl<B: Bus> Cpu<B> {
         }
     }
 
-    /// Executes the SBC instruction.
     fn sbc(&mut self) {
         if !self.resolve() {
             return;
@@ -1700,53 +1358,34 @@ impl<B: Bus> Cpu<B> {
         if self.get_flag(StatusFlag::D) {
             todo!();
         } else {
-            let mut res = self.a.wrapping_sub(self.data);
-            if !self.get_flag(StatusFlag::C) {
-                dec!(res);
-            }
-
-            self.set_flag(
-                StatusFlag::V,
-                (self.a ^ res) & (!(self.data) ^ res) & 0x80 != 0,
-            );
-            self.set_flag(StatusFlag::C, res < self.a);
-            self.set_flag_zn(res);
-            self.a = res;
+            self.a = binary_add(self, !self.data);
         }
 
         self.finish();
     }
 
-    impl_flag!(sec, C, true);
-    impl_flag!(sed, D, true);
-    impl_flag!(sei, I, true);
-    impl_st!(sta, a);
-    impl_st!(stx, x);
-    impl_st!(sty, y);
-    impl_xfer!(tax, x, a);
-    impl_xfer!(tay, y, a);
-    impl_xfer!(tsx, x, s);
-    impl_xfer!(txa, a, x);
-    impl_xfer!(txs, s, x, no_flag);
-    impl_xfer!(tya, a, y);
-
-    fn illegal(&self) {
-        panic!(
-            "attempted to execute illegal instruction `0x{:02X}`",
-            self.ir.opcode
-        );
-    }
-
-    /// Finalizes instruction execution (reset states, phases, etc.).
+    /// Finalize instruction execution (reset state, phase, etc.).
     fn finish(&mut self) {
         self.phase = Phase::Read;
         self.state.t1();
     }
 }
 
+fn binary_add<B: Bus>(cpu: &mut Cpu<B>, value: u8) -> u8 {
+    let mut res = cpu.a.wrapping_add(value);
+    if cpu.get_flag(StatusFlag::C) {
+        inc!(res);
+    }
+
+    cpu.set_flag(StatusFlag::V, (cpu.a ^ res) & (value ^ res) & 0x80 != 0);
+    cpu.set_flag(StatusFlag::C, res < cpu.a);
+    cpu.set_flag_zn(res);
+
+    res
+}
+
 fn asl_impl<B: Bus>(cpu: &mut Cpu<B>, mut value: u8) -> u8 {
     cpu.set_flag(StatusFlag::C, value & 0x80 != 0);
-
     value = (value & 0x7F) << 1;
     cpu.set_flag_zn(value);
 
@@ -1755,7 +1394,6 @@ fn asl_impl<B: Bus>(cpu: &mut Cpu<B>, mut value: u8) -> u8 {
 
 fn lsr_impl<B: Bus>(cpu: &mut Cpu<B>, mut value: u8) -> u8 {
     cpu.set_flag(StatusFlag::C, value & 0x1 != 0);
-
     value = (value & 0xFE) >> 1;
     cpu.set_flag_zn(value);
 
@@ -1765,7 +1403,6 @@ fn lsr_impl<B: Bus>(cpu: &mut Cpu<B>, mut value: u8) -> u8 {
 fn rol_impl<B: Bus>(cpu: &mut Cpu<B>, mut value: u8) -> u8 {
     let carry = if cpu.get_flag(StatusFlag::C) { 1 } else { 0 };
     cpu.set_flag(StatusFlag::C, value & 0x80 != 0);
-
     value = ((value & 0x7F) << 1) | carry;
     cpu.set_flag_zn(value);
 
@@ -1775,7 +1412,6 @@ fn rol_impl<B: Bus>(cpu: &mut Cpu<B>, mut value: u8) -> u8 {
 fn ror_impl<B: Bus>(cpu: &mut Cpu<B>, mut value: u8) -> u8 {
     let carry = if cpu.get_flag(StatusFlag::C) { 0x80 } else { 0 };
     cpu.set_flag(StatusFlag::C, value & 1 != 0);
-
     value = carry | ((value & 0x7F) >> 1);
     cpu.set_flag_zn(value);
 
@@ -1806,9 +1442,9 @@ mod tests {
             if $lhs != $rhs {
                 panic!(
                     "failed byte assertion:\n    \
-                expr: `{}`\n  \
-                expect: `0x{:04X}`\n  \
-                actual: `0x{:04X}`\n",
+                    expr: `{}`\n  \
+                    expect: `0x{:04X}`\n  \
+                    actual: `0x{:04X}`\n",
                     stringify!($lhs),
                     $rhs,
                     $lhs,
@@ -1822,9 +1458,9 @@ mod tests {
             if $lhs != $rhs {
                 panic!(
                     "failed byte assertion:\n    \
-                expr: `{}`\n  \
-                expect: `0x{:02X}`\n  \
-                actual: `0x{:02X}`\n",
+                    expr: `{}`\n  \
+                    expect: `0x{:02X}`\n  \
+                    actual: `0x{:02X}`\n",
                     stringify!($lhs),
                     $rhs,
                     $lhs,
@@ -1892,13 +1528,13 @@ mod tests {
 
         cpu.p = 0;
         test_flag!(cpu, N, true, reset = true);
-        test_flag!(cpu, V, false, reset = true);
+        test_flag!(cpu, V, true, reset = true);
         test_flag!(cpu, _U, true, reset = true);
         test_flag!(cpu, B, true, reset = true);
         test_flag!(cpu, D, true, reset = true);
-        test_flag!(cpu, I, false, reset = true);
+        test_flag!(cpu, I, true, reset = true);
         test_flag!(cpu, Z, true, reset = true);
-        test_flag!(cpu, C, false, reset = true);
+        test_flag!(cpu, C, true, reset = true);
 
         cpu.p = 0;
         test_flag!(cpu, N, true, reset = false);
@@ -1909,7 +1545,6 @@ mod tests {
         test_flag!(cpu, I, true, reset = false);
         test_flag!(cpu, Z, true, reset = false);
         test_flag!(cpu, C, true, reset = false);
-
         assert_byte_eq!(cpu.p, 0xFF);
     }
 }
