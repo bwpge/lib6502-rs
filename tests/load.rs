@@ -217,36 +217,21 @@ mod lda {
     }
 
     #[test]
-    fn indirect_y() {
+    fn indirect_y_cross() {
         let (ram, mut cpu) = setup(asm! {
             0x0000: 0xA0 0x01; //  LDY #$01     2 cyc
             0x0002: 0xB1 0xFF; //  LDA ($FF),Y  6 cyc (from crossing page)
+            0x00FF: 0xFF;
+            0xA100: 0x05;
         });
-        ram.borrow_mut().write(0x00FF, 0x99);
-        ram.borrow_mut().write(0x0100, 0x99);
-        ram.borrow_mut().write(0x9999, 0x05);
-        assert_mem_eq!(ram, 0x00FF, 0x99);
-        assert_mem_eq!(ram, 0x0100, 0x99);
-        assert_mem_eq!(ram, 0x9999, 0x05);
-        assert_cpu!(
-            cpu,
-            pc = 0x0000,
-            a = 0x00,
-            x = 0x00,
-            y = 0x00,
-            p = 0x24,
-            cyc = 7
-        );
+        assert_mem_eq!(ram, 0x00FF, 0xFF);
+        assert_mem_eq!(ram, 0xA100, 0x05);
+        assert_cpu!(cpu, pc = 0x0000, a = 0x00, y = 0x00, p = 0x24, cyc = 7);
 
+        // LDA ($FF),Y should read FF as the low byte on the zero page, then
+        // it should wrap around to 00 and read A0 as the high byte. with Y=1,
+        // the offset will cross pages to A100, costing an extra cycle.
         cpu.step_for(2);
-        assert_cpu!(
-            cpu,
-            pc = 0x0004,
-            a = 0x05,
-            x = 0x00,
-            y = 0x01,
-            p = 0x24,
-            cyc = 15
-        );
+        assert_cpu!(cpu, pc = 0x0004, a = 0x05, y = 0x01, p = 0x24, cyc = 15);
     }
 }
