@@ -618,6 +618,7 @@ impl<B: Bus> Cpu<B> {
                 };
                 self.addr_carry = (lo & 0xFF00) != 0;
                 self.addr = hi | (lo & 0x00FF);
+                self.data = self.read_u8(self.addr);
 
                 // check if additional cycle required for offset carry
                 // (RMW always requires an additional cycle)
@@ -759,18 +760,20 @@ impl<B: Bus> Cpu<B> {
                 let ptr = self.data as u16;
                 self.addr = self.read_u8(ptr) as u16;
 
-                if ptr == 0xFF {
-                    self.addr_carry = true;
-                }
-
                 self.state.next();
             }
-            // fetch effective address high
+            // fetch effective address high, add Y to effective address
             State::T4 => {
                 let ptr = self.data.wrapping_add(1) as u16;
                 let hi = self.read_u8(ptr) as u16;
                 self.addr |= hi << 8;
 
+                // check if y index caused a page cross
+                let lo = (self.addr & 0x00FF).wrapping_add(self.y as u16);
+                self.addr_carry = lo & 0xFF00 != 0;
+
+                self.addr = (self.addr & 0xFF00) | (lo & 0x00FF);
+                self.data = self.read_u8(self.addr);
                 if self.addr_carry {
                     self.state.next();
                     return false;
@@ -780,13 +783,11 @@ impl<B: Bus> Cpu<B> {
             }
             // fix high byte of effective address
             State::T5 => {
-                let ptr = (self.data as u16) + 1;
-                let hi = self.read_u8(ptr) as u16;
-
-                self.addr = (hi << 8) | (self.addr & 0x00FF);
-                self.data = self.read_u8(self.addr);
-
+                debug_assert!(self.addr_carry);
+                inc!(self.addr, 0x100);
                 self.addr_carry = false;
+
+                self.data = self.read_u8(self.addr);
                 self.state.t0();
             }
             State::T0 => return true,
