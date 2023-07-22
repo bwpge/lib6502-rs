@@ -14,11 +14,11 @@ fn brk() {
     assert_mem_eq!(ram, 0x01FB, 0x00);
 
     cpu.step();
-    assert_cpu!(cpu, pc = 0x0001, p = 0x20, cyc = 9);
+    assert_cpu!(cpu, pc = 0x0001, s = 0x01FD, p = 0x20, cyc = 9);
 
     cpu.step();
     // ensure BRK sets I flag
-    assert_cpu!(cpu, pc = 0x0000, p = 0x24, cyc = 16);
+    assert_cpu!(cpu, pc = 0x0000, s = 0x01FA, p = 0x24, cyc = 16);
     // ensure PC pushed at PC+2 from BRK
     assert_mem_eq!(ram, 0x01FD, 0x00);
     assert_mem_eq!(ram, 0x01FC, 0x03);
@@ -77,41 +77,57 @@ mod jmp {
     }
 }
 
-#[cfg(test)]
-mod jsr {
-    use super::*;
+#[test]
+fn jsr() {
+    let (ram, mut cpu) = setup(asm! {
+        0x0000: 0x4C 0x56 0xC0; //  JMP $C056  3 cyc
+        0xC056: 0x20 0x1A 0xCE; //  JSR $CE1A  6 cyc
+    });
+    assert_cpu!(cpu, pc = 0x0000, cyc = 7);
 
-    #[test]
-    fn absolute() {
-        let (ram, mut cpu) = setup(asm! {
-            0x0000: 0x4C 0x56 0xC0; //  JMP $C056  3 cyc
-            0xC056: 0x20 0x1A 0xCE; //  JSR $CE1A  6 cyc
-        });
-        assert_cpu!(cpu, pc = 0x0000, cyc = 7);
-
-        cpu.step_for(2);
-        assert_cpu!(cpu, pc = 0xCE1A, cyc = 16);
-        assert_mem_eq!(ram, 0x01FD, 0xC0);
-        assert_mem_eq!(ram, 0x01FC, 0x58);
-    }
+    cpu.step_for(2);
+    assert_cpu!(cpu, pc = 0xCE1A, cyc = 16);
+    assert_mem_eq!(ram, 0x01FD, 0xC0);
+    assert_mem_eq!(ram, 0x01FC, 0x58);
 }
 
-#[cfg(test)]
-mod rts {
-    use super::*;
+#[test]
+fn rts() {
+    let (ram, mut cpu) = setup(asm! {
+        0x0000: 0x4C 0x56 0xC0; //  JMP $C056  3 cyc
+        0xC056: 0x20 0x1A 0xCE; //  JSR $CE1A  6 cyc
+        0xCE1A: 0x60; //            RTS        6 cyc
+    });
+    assert_cpu!(cpu, pc = 0x0000, cyc = 7);
 
-    #[test]
-    fn absolute() {
-        let (ram, mut cpu) = setup(asm! {
-            0x0000: 0x4C 0x56 0xC0; //  JMP $C056  3 cyc
-            0xC056: 0x20 0x1A 0xCE; //  JSR $CE1A  6 cyc
-            0xCE1A: 0x60; //            RTS        6 cyc
-        });
-        assert_cpu!(cpu, pc = 0x0000, cyc = 7);
+    cpu.step_for(3);
+    assert_cpu!(cpu, pc = 0xC059, cyc = 22);
+    assert_mem_eq!(ram, 0x01FD, 0xC0);
+    assert_mem_eq!(ram, 0x01FC, 0x58);
+}
 
-        cpu.step_for(3);
-        assert_cpu!(cpu, pc = 0xC059, cyc = 22);
-        assert_mem_eq!(ram, 0x01FD, 0xC0);
-        assert_mem_eq!(ram, 0x01FC, 0x58);
-    }
+#[test]
+fn rti() {
+    let (ram, mut cpu) = setup(asm! {
+        0x0000: 0xF8 0x78; //       SED SEI      4 cyc
+        0x0002: 0x4C 0x56 0xC0; //  JMP $C056    3 cyc
+        0xC056: 0x00 0xFF; //       BRK          7 cyc
+        0xD000: 0xD8 0x58; //       CLD CLI      4 cyc
+        0xD002: 0x40; //            RTI          6 cyc
+        0xFFFE: 0x00 0xD0;
+    });
+    assert_cpu!(cpu, pc = 0x0000, cyc = 7);
+
+    cpu.step_for(4);
+    assert_cpu!(cpu, pc = 0xD000, s = 0x01FA, p = 0x2C, cyc = 21);
+    assert_mem_eq!(ram, 0x01FD, 0xC0);
+    assert_mem_eq!(ram, 0x01FC, 0x58);
+
+    cpu.step_for(2);
+    // ensure flags are cleared
+    assert_cpu!(cpu, pc = 0xD002, s = 0x01FA, p = 0x20, cyc = 25);
+
+    cpu.step();
+    // verify RTI restores P and PC
+    assert_cpu!(cpu, pc = 0xC058, s = 0x01FD, p = 0x2C, cyc = 31);
 }
