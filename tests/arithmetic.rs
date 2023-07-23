@@ -3,6 +3,59 @@ mod common;
 use crate::common::setup;
 
 #[cfg(test)]
+mod overflow {
+    use super::*;
+
+    #[test]
+    fn add_pos_pos() {
+        let (_, mut cpu) = setup(asm! {
+            0x0000: 0xA9 0x70; //  LDA #$70  2 cyc
+            0x0002: 0x69 0x11; //  ADC #$11  2 cyc
+        });
+        assert_cpu!(cpu, pc = 0x0000, a = 0x00, p = 0x24, cyc = 7);
+
+        cpu.step_for(2);
+        assert_cpu!(cpu, pc = 0x0004, a = 0x81, p = 0xE4, cyc = 11);
+    }
+
+    #[test]
+    fn add_neg_neg() {
+        let (_, mut cpu) = setup(asm! {
+            0x0000: 0xA9 0x90; //  LDA #$90  2 cyc
+            0x0002: 0x69 0x90; //  ADC #$90  2 cyc
+        });
+        assert_cpu!(cpu, pc = 0x0000, a = 0x00, p = 0x24, cyc = 7);
+
+        cpu.step_for(2);
+        assert_cpu!(cpu, pc = 0x0004, a = 0x20, p = 0x65, cyc = 11);
+    }
+
+    #[test]
+    fn sub_pos_neg() {
+        let (_, mut cpu) = setup(asm! {
+            0x0000: 0xA9 0x79; //  LDA #$79  2 cyc
+            0x0002: 0xE9 0x81; //  SBC #$81  2 cyc
+        });
+        assert_cpu!(cpu, pc = 0x0000, a = 0x00, p = 0x24, cyc = 7);
+
+        cpu.step_for(2);
+        assert_cpu!(cpu, pc = 0x0004, a = 0xF7, p = 0xE4, cyc = 11);
+    }
+
+    #[test]
+    fn sub_neg_pos() {
+        let (_, mut cpu) = setup(asm! {
+            0x0000: 0xA9 0x81; //  LDA #$81  2 cyc
+            0x0002: 0xE9 0x79; //  SBC #$79  2 cyc
+        });
+        assert_cpu!(cpu, pc = 0x0000, a = 0x00, p = 0x24, cyc = 7);
+
+        cpu.step_for(2);
+        assert_cpu!(cpu, pc = 0x0004, a = 0x07, p = 0x65, cyc = 11);
+    }
+}
+
+#[cfg(test)]
 mod adc {
     use super::*;
 
