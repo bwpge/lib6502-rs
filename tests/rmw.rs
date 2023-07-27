@@ -1,7 +1,5 @@
 mod common;
 
-use lib6502::Bus;
-
 use crate::common::setup;
 
 #[cfg(test)]
@@ -12,8 +10,8 @@ mod decrement {
     fn dec_abs() {
         let (ram, mut cpu) = setup(asm! {
             0x0000: 0xCE 0x01 0x0F; //  DEC $0F01  6 cyc
+            0x0F01: 0xCC;
         });
-        ram.borrow_mut().write(0x0F01, 0xCC);
         assert_mem_eq!(ram, 0x0F01, 0xCC);
         assert_cpu!(cpu, pc = 0x0000, p = 0x24, cyc = 7);
 
@@ -27,8 +25,8 @@ mod decrement {
         let (ram, mut cpu) = setup(asm! {
             0x0000: 0xA2 0x02; //       LDX #$02     2 cyc
             0x0002: 0xDE 0xFC 0x01; //  DEC $01FF,X  7 cyc
+            0x01FE: 0xCC;
         });
-        ram.borrow_mut().write(0x01FE, 0xCC);
         assert_mem_eq!(ram, 0x01FE, 0xCC);
         assert_cpu!(cpu, pc = 0x0000, p = 0x24, cyc = 7);
 
@@ -41,8 +39,8 @@ mod decrement {
     fn dec_zpg() {
         let (ram, mut cpu) = setup(asm! {
             0x0000: 0xC6 0x11; //  DEC $11  5 cyc
+            0x0011: 0xCC;
         });
-        ram.borrow_mut().write(0x0011, 0xCC);
         assert_mem_eq!(ram, 0x0011, 0xCC);
         assert_cpu!(cpu, pc = 0x0000, p = 0x24, cyc = 7);
 
@@ -56,8 +54,8 @@ mod decrement {
         let (ram, mut cpu) = setup(asm! {
             0x0000: 0xA2 0xF2; //  LDX #$02   2 cyc
             0x0002: 0xD6 0xFF; //  DEC $FF,X  6 cyc
+            0x00F1: 0xCC;
         });
-        ram.borrow_mut().write(0x00F1, 0xCC);
         assert_mem_eq!(ram, 0x00F1, 0xCC);
         assert_cpu!(cpu, pc = 0x0000, p = 0x24, cyc = 7);
 
@@ -71,8 +69,8 @@ mod decrement {
         let (ram, mut cpu) = setup(asm! {
             0x0000: 0xA2 0x02; //       LDX #$02     2 cyc
             0x0002: 0xDE 0xFF 0x01; //  DEC $01FF,X  7 cyc
+            0x0201: 0xCC;
         });
-        ram.borrow_mut().write(0x0201, 0xCC);
         assert_mem_eq!(ram, 0x0201, 0xCC);
         assert_cpu!(cpu, pc = 0x0000, p = 0x24, cyc = 7);
 
@@ -116,8 +114,8 @@ mod increment {
     fn inc_abs() {
         let (ram, mut cpu) = setup(asm! {
             0x0000: 0xEE 0x01 0x0F; //  INC $0F01  6 cyc
+            0x0F01: 0xCC;
         });
-        ram.borrow_mut().write(0x0F01, 0xCC);
         assert_mem_eq!(ram, 0x0F01, 0xCC);
         assert_cpu!(cpu, pc = 0x0000, p = 0x24, cyc = 7);
 
@@ -131,8 +129,8 @@ mod increment {
         let (ram, mut cpu) = setup(asm! {
             0x0000: 0xA2 0x02; //       LDX #$02     2 cyc
             0x0002: 0xFE 0xFC 0x01; //  DEC $01FF,X  7 cyc
+            0x01FE: 0xCC;
         });
-        ram.borrow_mut().write(0x01FE, 0xCC);
         assert_mem_eq!(ram, 0x01FE, 0xCC);
         assert_cpu!(cpu, pc = 0x0000, p = 0x24, cyc = 7);
 
@@ -146,8 +144,8 @@ mod increment {
         let (ram, mut cpu) = setup(asm! {
             0x0000: 0xA2 0x02; //       LDX #$02     2 cyc
             0x0002: 0xFE 0xFF 0x01; //  DEC $01FF,X  7 cyc
+            0x0201: 0xCC;
         });
-        ram.borrow_mut().write(0x0201, 0xCC);
         assert_mem_eq!(ram, 0x0201, 0xCC);
         assert_cpu!(cpu, pc = 0x0000, p = 0x24, cyc = 7);
 

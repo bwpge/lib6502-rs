@@ -1,7 +1,5 @@
 mod common;
 
-use lib6502::Bus;
-
 use crate::common::setup;
 
 #[cfg(test)]
@@ -39,8 +37,8 @@ mod lda {
     fn zeropage() {
         let (ram, mut cpu) = setup(asm! {
             0x0000: 0xA5 0xFE; //  LDA $FE  3 cyc
+            0x00FE: 0xCD;
         });
-        ram.borrow_mut().write(0x00FE, 0xCD);
         assert_mem_eq!(ram, 0x00FE, 0xCD);
         assert_cpu!(
             cpu,
@@ -69,8 +67,8 @@ mod lda {
         let (ram, mut cpu) = setup(asm! {
             0x0000: 0xA2 0x05; //  LDX #$05   2 cyc
             0x0002: 0xB5 0xF0; //  LDA $F0,X  4 cyc
+            0x00F5: 0x0C;
         });
-        ram.borrow_mut().write(0x00F5, 0x0C);
         assert_mem_eq!(ram, 0x00F5, 0x0C);
         assert_cpu!(
             cpu,
@@ -96,10 +94,10 @@ mod lda {
 
     #[test]
     fn absolute() {
-        let (ram, mut cpu) = setup(asm! {
+        let (_, mut cpu) = setup(asm! {
             0x0000: 0xAD 0xCC 0x08; //  LDA $08CC  4 cyc
+            0x08CC: 0x55;
         });
-        ram.borrow_mut().write(0x08CC, 0x55);
         assert_cpu!(
             cpu,
             pc = 0x0000,
@@ -127,8 +125,8 @@ mod lda {
         let (ram, mut cpu) = setup(asm! {
             0x0000: 0xA2 0xA1; //       LDX #$A1     2 cyc
             0x0002: 0xBD 0xF0 0x55; //  LDA $55F0,X  5 cyc (from crossing page)
+            0x5691: 0x0C;
         });
-        ram.borrow_mut().write(0x5691, 0x0C);
         assert_mem_eq!(ram, 0x5691, 0x0C);
         assert_cpu!(
             cpu,
@@ -157,8 +155,8 @@ mod lda {
         let (ram, mut cpu) = setup(asm! {
             0x0000: 0xA0 0xA1; //       LDY #$A1     2 cyc
             0x0002: 0xB9 0xF0 0x55; //  LDA $55F0,Y  5 cyc (from crossing page)
+            0x5691: 0x0C;
         });
-        ram.borrow_mut().write(0x5691, 0x0C);
         assert_mem_eq!(ram, 0x5691, 0x0C);
         assert_cpu!(
             cpu,
@@ -187,10 +185,10 @@ mod lda {
         let (ram, mut cpu) = setup(asm! {
             0x0000: 0xA2 0x0F; //  LDX #$0F     2 cyc
             0x0002: 0xA1 0x10; //  LDA ($10,X)  6 cyc
+            0x0020: 0x99;
+            0x001F: 0x99;
+            0x9999: 0x05;
         });
-        ram.borrow_mut().write(0x001F, 0x99);
-        ram.borrow_mut().write(0x0020, 0x99);
-        ram.borrow_mut().write(0x9999, 0x05);
         assert_mem_eq!(ram, 0x001F, 0x99);
         assert_mem_eq!(ram, 0x0020, 0x99);
         assert_mem_eq!(ram, 0x9999, 0x05);

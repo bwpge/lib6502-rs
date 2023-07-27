@@ -37,7 +37,7 @@ impl Bus for Ram {
     }
 }
 
-pub fn setup(prog: [u8; 0x10000]) -> (Rc<RefCell<Ram>>, Cpu<Ram>) {
+pub fn setup(prog: [u8; 0x10000]) -> (Rc<RefCell<Ram>>, Cpu<Rc<RefCell<Ram>>>) {
     let ram = Rc::new(RefCell::new(Ram::new().load_at(&prog, 0)));
     let mut cpu = Cpu::new(ram.clone());
     cpu.step();

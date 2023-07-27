@@ -1,15 +1,10 @@
 #![allow(clippy::upper_case_acronyms)]
 
-use std::{cell::RefCell, rc::Rc};
-
 use crate::{AddressingMode, Bus, Instruction};
 
 const NMI_VECTOR: u16 = 0xFFFA;
 const RES_VECTOR: u16 = 0xFFFC;
 const IRQ_VECTOR: u16 = 0xFFFE;
-
-/// A type that allows shared access with interior mutability.
-type Shared<T> = Rc<RefCell<T>>;
 
 /// Increments the given expression with `wrapping_add` and stores the result.
 ///
@@ -278,7 +273,10 @@ impl Interrupt {
     }
 }
 
-/// A cycle-accurate 6502 processor emulator, connected to a [`Bus`].
+/// A cycle-accurate 6502 processor emulator, connected to a bus.
+///
+/// See the [`bus`][crate::bus] module documentation for more details on shared
+/// buses that require interior mutability.
 #[derive(Debug)]
 pub struct Cpu<B: Bus> {
     /// The program counter (`PC`).
@@ -293,8 +291,8 @@ pub struct Cpu<B: Bus> {
     x: u8,
     /// The `Y` index register.
     y: u8,
-    /// Internal reference to the connected bus.
-    bus: Shared<B>,
+    /// The connected [`Bus`].
+    bus: B,
     /// The instruction register (`IR`).
     ///
     /// This value is updated *after* the instruction is decoded on the first
@@ -326,7 +324,7 @@ pub struct Cpu<B: Bus> {
 
 impl<B: Bus> Cpu<B> {
     /// Creates a new [`Cpu`] connected to the given [`Bus`].
-    pub fn new(bus: Shared<B>) -> Self {
+    pub fn new(bus: B) -> Self {
         Self {
             pc: Default::default(),
             s: Default::default(),
@@ -487,13 +485,13 @@ impl<B: Bus> Cpu<B> {
     /// Reads a single byte from the bus at the specified address.
     #[inline(always)]
     fn read_u8(&self, address: u16) -> u8 {
-        self.bus.borrow().read(address)
+        self.bus.read(address)
     }
 
     /// Writes a byte to the bus at the given address.
     #[inline(always)]
     fn write_u8(&mut self, address: u16, data: u8) {
-        self.bus.borrow_mut().write(address, data)
+        self.bus.write(address, data)
     }
 
     /// Writes a byte to the stack and decrements the stack pointer.
@@ -1434,10 +1432,6 @@ mod tests {
         fn write(&mut self, _: u16, _: u8) {}
     }
 
-    fn cpu<B: Bus>(bus: B) -> Cpu<B> {
-        Cpu::new(Rc::new(RefCell::new(bus)))
-    }
-
     macro_rules! assert_word_eq {
         ($lhs:expr, $rhs:expr) => {
             if $lhs != $rhs {
@@ -1472,7 +1466,7 @@ mod tests {
 
     #[test]
     fn init_reset() {
-        let mut cpu = cpu(StaticBus(0xEA));
+        let mut cpu = Cpu::new(StaticBus(0xEA));
         cpu.step();
 
         assert_word_eq!(cpu.pc, 0xEAEA);
@@ -1487,7 +1481,7 @@ mod tests {
 
     #[test]
     fn sp_addr() {
-        let mut cpu = cpu(StaticBus(0x00));
+        let mut cpu = Cpu::new(StaticBus(0x00));
 
         cpu.s = 0x00;
         for sp in 0..=512 {
@@ -1499,7 +1493,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn illegal_opcode_panics() {
-        let mut cpu = cpu(StaticBus(0xFF));
+        let mut cpu = Cpu::new(StaticBus(0xFF));
         cpu.step_for(2); // reset + illegal
     }
 
@@ -1525,7 +1519,7 @@ mod tests {
             }};
         }
 
-        let mut cpu = cpu(StaticBus(0xEA));
+        let mut cpu = Cpu::new(StaticBus(0xEA));
 
         cpu.p = 0;
         test_flag!(cpu, N, true, reset = true);
