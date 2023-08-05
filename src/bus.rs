@@ -169,7 +169,7 @@ impl<B: Bus> Bus for Mutex<B> {
     }
 
     fn write(&mut self, address: u16, data: u8) {
-        self.lock().expect("already locked").write(address, data);
+        self.get_mut().expect("already locked").write(address, data);
     }
 }
 
